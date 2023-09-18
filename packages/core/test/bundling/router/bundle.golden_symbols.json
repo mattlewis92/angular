@@ -1104,6 +1104,9 @@
     "name": "diPublicInInjector"
   },
   {
+    "name": "disableStylesheet"
+  },
+  {
     "name": "dispatch"
   },
   {
@@ -1720,6 +1723,9 @@
   },
   {
     "name": "nodeChildrenAsMap"
+  },
+  {
+    "name": "nonNegativeNumber"
   },
   {
     "name": "nonNull"
