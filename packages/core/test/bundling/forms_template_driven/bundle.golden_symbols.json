@@ -870,6 +870,9 @@
     "name": "diPublicInInjector"
   },
   {
+    "name": "disableStylesheet"
+  },
+  {
     "name": "empty"
   },
   {
@@ -1423,6 +1426,9 @@
   },
   {
     "name": "noSideEffects"
+  },
+  {
+    "name": "nonNegativeNumber"
   },
   {
     "name": "nonNull"
