@@ -38,7 +38,7 @@ export function parseComponentDecorator(
     if (ts.isClassDeclaration(node) && node.name) {
       const componentDecorator = findComponentDecorator(node);
       if (componentDecorator) {
-        result = extractMetadata(node.name.text, componentDecorator);
+        result = extractMetadata(node.name.text, componentDecorator, node, sourceCode);
       }
     }
     ts.forEachChild(node, visit);
@@ -79,7 +79,12 @@ function findComponentDecorator(node: ts.ClassDeclaration): ts.CallExpression | 
 function extractMetadata(
   className: string,
   decorator: ts.CallExpression,
+  classDecl: ts.ClassDeclaration,
+  sourceCode: string,
 ): ExtractedComponentMetadata {
+  // Extract class body - get the content between the class braces
+  const classBody = extractClassBody(classDecl, sourceCode);
+
   const metadata: ExtractedComponentMetadata = {
     className,
     selector: null,
@@ -95,6 +100,7 @@ function extractMetadata(
     host: {},
     inputs: {},
     outputs: {},
+    classBody,
   };
 
   if (decorator.arguments.length === 0) return metadata;
@@ -341,4 +347,21 @@ function extractOutputs(node: ts.Expression): Record<string, string> {
     }
   }
   return result;
+}
+
+/**
+ * Extracts the class body source code (members only, without the class declaration).
+ */
+function extractClassBody(classDecl: ts.ClassDeclaration, sourceCode: string): string {
+  const members: string[] = [];
+
+  for (const member of classDecl.members) {
+    // Get the source text of each member
+    const memberText = sourceCode.slice(member.pos, member.end).trim();
+    if (memberText) {
+      members.push(memberText);
+    }
+  }
+
+  return members.join('\n\n');
 }

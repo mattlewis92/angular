@@ -9,10 +9,9 @@
 import {
   compileComponentFromMetadata,
   ConstantPool,
-  DeclareVarStmt,
+  EmitterVisitorContext,
+  Expression,
   makeBindingParser,
-  Statement,
-  StmtModifier,
 } from '@angular/compiler';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -100,31 +99,23 @@ export function compileComponent(
     const bindingParser = makeBindingParser(metadata.interpolation);
     const compiledComponent = compileComponentFromMetadata(metadata, constantPool, bindingParser);
 
-    // 8. Build statement list
-    const statements: Statement[] = [
-      // Add constant pool statements first
-      ...constantPool.statements,
-      // Add the component definition
-      new DeclareVarStmt(
-        `${extracted.className}Def`,
-        compiledComponent.expression,
-        undefined, // inferred type
-        StmtModifier.Exported,
-      ),
-    ];
-
-    // 9. Emit to JavaScript
+    // 8. Emit statements to JavaScript first (for template functions)
     const emitter = new AotJsEmitter();
-    const {code, sourceMap} = emitter.emit(statements, absolutePath, generateSourceMap);
+    const {code: statementsCode} = emitter.emit(
+      constantPool.statements,
+      absolutePath,
+      false, // Don't generate source map for statements
+    );
 
-    // 10. Build source map comment
-    const sourceMapComment = sourceMap
-      ? `//# sourceMappingURL=data:application/json;base64,${Buffer.from(JSON.stringify(sourceMap)).toString('base64')}`
-      : '';
+    // 9. Build the full class output
+    const code = buildClassOutput(extracted, compiledComponent.expression, emitter, statementsCode);
+
+    // 11. Build source map comment (simplified - full source maps would require more work)
+    const sourceMapComment = '';
 
     return {
       code,
-      sourceMap,
+      sourceMap: null,
       sourceMapComment,
       errors: [],
     };
@@ -178,6 +169,69 @@ function resolveTemplateAndStyles(
  */
 function defaultReadFile(filePath: string): string {
   return fs.readFileSync(filePath, 'utf-8');
+}
+
+/**
+ * Builds the full class output with static properties for ɵfac and ɵcmp.
+ */
+function buildClassOutput(
+  extracted: ExtractedComponentMetadata,
+  componentExpr: Expression,
+  emitter: AotJsEmitter,
+  statementsCode: string,
+): string {
+  const lines: string[] = [];
+
+  // Add import statements (only once - they're tracked in the emitter)
+  const imports = emitter.getImportStatements();
+  if (imports) {
+    lines.push(imports);
+    lines.push('');
+  }
+
+  // Add template functions and other statements from constant pool
+  // But strip the import statements that might have been duplicated
+  if (statementsCode.trim()) {
+    // Remove any import statements from the statements code
+    const statementsWithoutImports = statementsCode
+      .split('\n')
+      .filter((line) => !line.startsWith('import '))
+      .join('\n')
+      .trim();
+    if (statementsWithoutImports) {
+      lines.push(statementsWithoutImports);
+    }
+  }
+
+  // Emit the component definition expression
+  const componentCtx = EmitterVisitorContext.createRoot();
+  emitter.emitExpression(componentExpr, componentCtx);
+  const componentCode = componentCtx.toSource();
+
+  // Build the class
+  lines.push(`export class ${extracted.className} {`);
+
+  // Add class body (properties, constructor, methods)
+  if (extracted.classBody) {
+    // Indent the class body
+    const indentedBody = extracted.classBody
+      .split('\n')
+      .map((line) => (line.trim() ? '    ' + line : ''))
+      .join('\n');
+    lines.push(indentedBody);
+  }
+
+  // Add static factory function - simpler version without inheritance support
+  lines.push(`    static ɵfac = function ${extracted.className}_Factory(__ngFactoryType__) {`);
+  lines.push(`        return new (__ngFactoryType__ || ${extracted.className})();`);
+  lines.push(`    };`);
+
+  // Add static component definition
+  lines.push(`    static ɵcmp = /*@__PURE__*/ ${componentCode};`);
+
+  lines.push('}');
+
+  return lines.join('\n');
 }
 
 /**

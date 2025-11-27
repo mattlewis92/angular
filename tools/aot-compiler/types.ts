@@ -66,6 +66,8 @@ export interface ExtractedComponentMetadata {
   inputs: Record<string, InputMetadata>;
   /** Component outputs */
   outputs: Record<string, string>;
+  /** The class body source code (without decorator) */
+  classBody: string;
 }
 
 /**

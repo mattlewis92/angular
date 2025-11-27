@@ -146,6 +146,13 @@ export class AotJsEmitter {
     return `export { ${this.exportedVars.join(', ')} };`;
   }
 
+  /**
+   * Emits a single expression to the given context.
+   */
+  emitExpression(expr: Expression, ctx: EmitterVisitorContext): void {
+    this.visitExpression(expr, ctx);
+  }
+
   // ============ Statement Visitors ============
 
   private visitStatement(stmt: Statement, ctx: EmitterVisitorContext): void {
