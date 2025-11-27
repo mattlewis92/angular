@@ -19,6 +19,10 @@ if (sampleResult.errors.length > 0) {
 } else {
   console.log('SUCCESS! Generated code:\n');
   console.log(sampleResult.code);
+  if (sampleResult.sourceMap) {
+    console.log('\nSource map:');
+    console.log(JSON.stringify(sampleResult.sourceMap, null, 2));
+  }
   console.log('\n');
 }
 
