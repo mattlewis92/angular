@@ -110,6 +110,7 @@ export function compileComponent(
       extracted.className,
       constantPool,
       compiledComponent.expression,
+      resources,
       generateSourceMap,
     );
   } catch (error) {
@@ -132,6 +133,7 @@ function transformAndEmitWithBabel(
   className: string,
   constantPool: ConstantPool,
   componentExpr: import('@angular/compiler').Expression,
+  resources: ResolvedResources,
   generateSourceMap: boolean,
 ): CompilationResult {
   // Create the translator for converting @angular/compiler expressions to Babel AST
@@ -249,11 +251,12 @@ function transformAndEmitWithBabel(
   });
 
   // Generate output code with source maps
+  // Use absolute path for sourceFileName to match Angular compiler's source locations
   const output = generate(
     ast,
     {
       sourceMaps: generateSourceMap,
-      sourceFileName: path.basename(filePath),
+      sourceFileName: filePath,
       comments: true,
       compact: false,
     },
@@ -265,13 +268,31 @@ function transformAndEmitWithBabel(
   let sourceMapComment = '';
 
   if (generateSourceMap && output.map) {
+    // Build a map of source URL to content for deduplication and content lookup
+    const sourceContentMap = new Map<string, string | null>();
+    sourceContentMap.set(filePath, sourceCode);
+    sourceContentMap.set(resources.templateUrl, resources.template);
+
+    // Deduplicate sources and build sourcesContent with proper content
+    const uniqueSources: string[] = [];
+    const uniqueSourcesContent: (string | null)[] = [];
+
+    for (const source of output.map.sources) {
+      if (!uniqueSources.includes(source)) {
+        uniqueSources.push(source);
+        // Look up content: first try exact match, then try if this is the component file
+        const content = sourceContentMap.get(source) ?? null;
+        uniqueSourcesContent.push(content);
+      }
+    }
+
     // Convert Babel's source map to Angular's SourceMap type
     sourceMap = {
       version: output.map.version,
       file: output.map.file,
       sourceRoot: output.map.sourceRoot ?? '',
-      sources: output.map.sources,
-      sourcesContent: output.map.sourcesContent ?? [],
+      sources: uniqueSources,
+      sourcesContent: uniqueSourcesContent,
       mappings: output.map.mappings,
     };
     // Create inline source map comment
