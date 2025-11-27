@@ -35,4 +35,8 @@ if (externalResult.errors.length > 0) {
 } else {
   console.log('SUCCESS! Generated code:\n');
   console.log(externalResult.code);
+  if (externalResult.sourceMap) {
+    console.log('\nSource map:');
+    console.log(JSON.stringify(externalResult.sourceMap, null, 2));
+  }
 }
