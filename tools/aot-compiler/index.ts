@@ -7,13 +7,17 @@
  */
 
 import {compileComponentFromMetadata, ConstantPool, makeBindingParser} from '@angular/compiler';
+import {parse} from '@babel/parser';
+import traverse, {NodePath} from '@babel/traverse';
+import generate from '@babel/generator';
+import * as t from '@babel/types';
 import * as fs from 'fs';
 import * as path from 'path';
-import ts from 'typescript';
 
+import {BabelBackedTranslator} from './babel-translator';
 import {parseComponentDecorator} from './decorator-parser';
 import {buildR3ComponentMetadata} from './metadata-builder';
-import {TypeScriptBackedTranslator} from './ts-translator';
+import type {SourceMap} from '@angular/compiler';
 import {
   CompilationResult,
   CompileComponentOptions,
@@ -80,8 +84,8 @@ export function compileComponent(
     const bindingParser = makeBindingParser(metadata.interpolation);
     const compiledComponent = compileComponentFromMetadata(metadata, constantPool, bindingParser);
 
-    // 8. Use TypeScript transformer to generate output with source maps
-    const result = transformAndEmit(
+    // 8. Use Babel to generate output with source maps
+    const result = transformAndEmitWithBabel(
       sourceCode,
       absolutePath,
       extracted.className,
@@ -102,10 +106,9 @@ export function compileComponent(
 }
 
 /**
- * Uses TypeScript's transformer API to add static properties to the class
- * and emit JavaScript with source maps.
+ * Uses Babel to transform the source and emit JavaScript with source maps.
  */
-function transformAndEmit(
+function transformAndEmitWithBabel(
   sourceCode: string,
   filePath: string,
   className: string,
@@ -113,14 +116,11 @@ function transformAndEmit(
   componentExpr: import('@angular/compiler').Expression,
   generateSourceMap: boolean,
 ): CompilationResult {
-  // Parse the source file
-  const sourceFile = ts.createSourceFile(filePath, sourceCode, ts.ScriptTarget.Latest, true);
-
-  // Create the translator for converting @angular/compiler expressions to TS AST
-  const translator = new TypeScriptBackedTranslator(sourceFile);
+  // Create the translator for converting @angular/compiler expressions to Babel AST
+  const translator = new BabelBackedTranslator();
 
   // Translate constant pool statements (template functions, etc.)
-  const additionalStatements: ts.Statement[] = [];
+  const additionalStatements: t.Statement[] = [];
   for (const stmt of constantPool.statements) {
     additionalStatements.push(translator.translateStatement(stmt));
   }
@@ -128,216 +128,154 @@ function transformAndEmit(
   // Translate the component definition expression
   const componentDefExpr = translator.translateExpression(componentExpr);
 
-  // Create the transformer
-  const transformer: ts.TransformerFactory<ts.SourceFile> = (context) => {
-    return (sf) => {
-      const visitor: ts.Visitor = (node) => {
-        // Find the class declaration
-        if (ts.isClassDeclaration(node) && node.name?.text === className) {
-          // Remove @Component decorator
-          const decorators = ts.getDecorators(node);
-          const filteredDecorators = decorators?.filter((d) => {
-            if (ts.isCallExpression(d.expression)) {
-              const expr = d.expression.expression;
-              if (ts.isIdentifier(expr) && expr.text === 'Component') {
-                return false;
-              }
-              if (ts.isPropertyAccessExpression(expr) && expr.name.text === 'Component') {
+  // Get the import declarations from the translator
+  const newImportDeclarations = translator.getImportDeclarations();
+
+  // Parse the source file with Babel
+  const ast = parse(sourceCode, {
+    sourceType: 'module',
+    plugins: [
+      'typescript',
+      'decorators-legacy',
+      'classProperties',
+      'classPrivateProperties',
+      'classPrivateMethods',
+    ],
+    sourceFilename: filePath,
+  });
+
+  // Transform the AST
+  traverse(ast, {
+    // Remove @angular/core imports (they're replaced by runtime imports)
+    ImportDeclaration(path: NodePath<t.ImportDeclaration>) {
+      if (path.node.source.value === '@angular/core') {
+        path.remove();
+      }
+    },
+
+    // Find and transform the target class
+    ClassDeclaration(path: NodePath<t.ClassDeclaration>) {
+      if (path.node.id?.name !== className) {
+        return;
+      }
+
+      // Remove @Component decorator
+      if (path.node.decorators) {
+        path.node.decorators = path.node.decorators.filter((decorator) => {
+          if (t.isCallExpression(decorator.expression)) {
+            const callee = decorator.expression.callee;
+            // Check for @Component()
+            if (t.isIdentifier(callee) && callee.name === 'Component') {
+              return false;
+            }
+            // Check for @namespace.Component()
+            if (t.isMemberExpression(callee) && t.isIdentifier(callee.property)) {
+              if (callee.property.name === 'Component') {
                 return false;
               }
             }
-            return true;
-          });
+          }
+          return true;
+        });
 
-          const modifiers = ts.getModifiers(node);
-          const newModifiers: ts.ModifierLike[] = [
-            ...(filteredDecorators || []),
-            ...(modifiers || []),
-          ];
-
-          // Create static ɵfac property
-          const factoryProp = ts.factory.createPropertyDeclaration(
-            [ts.factory.createModifier(ts.SyntaxKind.StaticKeyword)],
-            'ɵfac',
-            undefined,
-            undefined,
-            ts.factory.createArrowFunction(
-              undefined,
-              undefined,
-              [
-                ts.factory.createParameterDeclaration(
-                  undefined,
-                  undefined,
-                  '__ngFactoryType__',
-                  ts.factory.createToken(ts.SyntaxKind.QuestionToken),
-                ),
-              ],
-              undefined,
-              ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
-              ts.factory.createNewExpression(
-                ts.factory.createParenthesizedExpression(
-                  ts.factory.createBinaryExpression(
-                    ts.factory.createIdentifier('__ngFactoryType__'),
-                    ts.SyntaxKind.BarBarToken,
-                    ts.factory.createIdentifier(className),
-                  ),
-                ),
-                undefined,
-                [],
-              ),
-            ),
-          );
-
-          // Create static ɵcmp property with @__PURE__ annotation
-          const cmpProp = ts.factory.createPropertyDeclaration(
-            [ts.factory.createModifier(ts.SyntaxKind.StaticKeyword)],
-            'ɵcmp',
-            undefined,
-            undefined,
-            componentDefExpr,
-          );
-          // Add @__PURE__ comment
-          ts.addSyntheticLeadingComment(
-            cmpProp,
-            ts.SyntaxKind.MultiLineCommentTrivia,
-            '@__PURE__',
-            false,
-          );
-
-          // Update class with new members
-          return ts.factory.updateClassDeclaration(
-            node,
-            newModifiers.length > 0 ? newModifiers : undefined,
-            node.name,
-            node.typeParameters,
-            node.heritageClauses,
-            [...node.members, factoryProp, cmpProp],
-          );
-        }
-        return ts.visitEachChild(node, visitor, context);
-      };
-      return ts.visitNode(sf, visitor) as ts.SourceFile;
-    };
-  };
-
-  // Transform the source file
-  const transformResult = ts.transform(sourceFile, [transformer]);
-  const transformedSourceFile = transformResult.transformed[0];
-
-  // Prepend additional statements (template functions) and imports
-  const importStatements = translator.getImportStatements();
-
-  // Filter out @angular/core decorator imports (Component, ViewEncapsulation, etc.)
-  // since those are compile-time only and the runtime imports are added by the translator
-  const filteredStatements = transformedSourceFile.statements.filter((stmt) => {
-    if (ts.isImportDeclaration(stmt)) {
-      const moduleSpecifier = stmt.moduleSpecifier;
-      if (ts.isStringLiteral(moduleSpecifier)) {
-        // Remove @angular/core imports - they're replaced by runtime imports
-        if (moduleSpecifier.text === '@angular/core') {
-          return false;
+        // If no decorators left, remove the decorators array
+        if (path.node.decorators.length === 0) {
+          path.node.decorators = null as any;
         }
       }
-    }
-    return true;
+
+      // Create static ɵfac property
+      const factoryMethod = t.classProperty(
+        t.identifier('ɵfac'),
+        t.arrowFunctionExpression(
+          [t.assignmentPattern(t.identifier('__ngFactoryType__'), t.identifier('undefined'))],
+          t.newExpression(
+            t.logicalExpression('||', t.identifier('__ngFactoryType__'), t.identifier(className)),
+            [],
+          ),
+        ),
+        undefined,
+        null,
+        false,
+        true, // static
+      );
+
+      // Create static ɵcmp property with @__PURE__ annotation
+      const cmpProperty = t.classProperty(
+        t.identifier('ɵcmp'),
+        componentDefExpr,
+        undefined,
+        null,
+        false,
+        true, // static
+      );
+      t.addComment(cmpProperty, 'leading', '@__PURE__', false);
+
+      // Add the static properties to the class
+      path.node.body.body.push(factoryMethod, cmpProperty);
+    },
+
+    // Handle Program to add imports and additional statements
+    Program: {
+      exit(path: NodePath<t.Program>) {
+        // Find the position after existing imports
+        let lastImportIndex = -1;
+        for (let i = 0; i < path.node.body.length; i++) {
+          if (t.isImportDeclaration(path.node.body[i])) {
+            lastImportIndex = i;
+          }
+        }
+
+        // Insert new imports after existing imports
+        const insertPosition = lastImportIndex + 1;
+
+        // Add new import declarations
+        for (let i = newImportDeclarations.length - 1; i >= 0; i--) {
+          path.node.body.splice(insertPosition, 0, newImportDeclarations[i]);
+        }
+
+        // Add additional statements (template functions) after imports
+        const statementsPosition = insertPosition + newImportDeclarations.length;
+        for (let i = additionalStatements.length - 1; i >= 0; i--) {
+          path.node.body.splice(statementsPosition, 0, additionalStatements[i]);
+        }
+      },
+    },
   });
 
-  const updatedSourceFile = ts.factory.updateSourceFile(transformedSourceFile, [
-    ...importStatements,
-    ...additionalStatements,
-    ...filteredStatements,
-  ]);
-
-  transformResult.dispose();
-
-  // Print to string first, then re-parse to get proper source positions
-  const printer = ts.createPrinter({newLine: ts.NewLineKind.LineFeed});
-  const printedCode = printer.printFile(updatedSourceFile);
-
-  // Use TypeScript program emit for proper source map generation
-  const result = emitWithSourceMap(printedCode, filePath, sourceCode, generateSourceMap);
-
-  return result;
-}
-
-/**
- * Emits JavaScript with proper source maps using an in-memory TypeScript program.
- */
-function emitWithSourceMap(
-  transformedCode: string,
-  filePath: string,
-  originalSource: string,
-  generateSourceMap: boolean,
-): CompilationResult {
-  const outputFiles: {name: string; text: string}[] = [];
-
-  // Re-parse the transformed code to get proper source positions
-  const sourceFile = ts.createSourceFile(filePath, transformedCode, ts.ScriptTarget.Latest, true);
-
-  // Create an in-memory compiler host
-  const compilerHost: ts.CompilerHost = {
-    getSourceFile: (fileName) => {
-      if (fileName === filePath) {
-        return sourceFile;
-      }
-      // Return empty source files for lib files to satisfy TypeScript
-      return ts.createSourceFile(fileName, '', ts.ScriptTarget.Latest);
+  // Generate output code with source maps
+  const output = generate(
+    ast,
+    {
+      sourceMaps: generateSourceMap,
+      sourceFileName: path.basename(filePath),
+      comments: true,
+      compact: false,
     },
-    getDefaultLibFileName: () => 'lib.d.ts',
-    writeFile: (name, text) => {
-      outputFiles.push({name, text});
-    },
-    getCurrentDirectory: () => path.dirname(filePath),
-    getCanonicalFileName: (fileName) => fileName,
-    useCaseSensitiveFileNames: () => true,
-    getNewLine: () => '\n',
-    fileExists: (fileName) => fileName === filePath,
-    readFile: (fileName) => (fileName === filePath ? originalSource : ''),
-    directoryExists: () => true,
-    getDirectories: () => [],
-  };
+    sourceCode,
+  );
 
-  const compilerOptions: ts.CompilerOptions = {
-    target: ts.ScriptTarget.ES2020,
-    module: ts.ModuleKind.ESNext,
-    sourceMap: generateSourceMap,
-    inlineSources: generateSourceMap,
-    declaration: false,
-    skipLibCheck: true,
-    noEmitOnError: false,
-  };
-
-  // Create program with just our transformed file
-  const program = ts.createProgram([filePath], compilerOptions, compilerHost);
-
-  // Emit the file
-  program.emit(sourceFile);
-
-  // Extract results
-  let code = '';
-  let sourceMap = null;
+  // Extract source map info
+  let sourceMap: SourceMap | null = null;
   let sourceMapComment = '';
 
-  for (const file of outputFiles) {
-    if (file.name.endsWith('.js')) {
-      code = file.text;
-      // Remove the source map comment from the code (we'll provide it separately)
-      const sourceMapMatch = code.match(/\/\/# sourceMappingURL=.+$/m);
-      if (sourceMapMatch) {
-        sourceMapComment = sourceMapMatch[0];
-        code = code.replace(/\/\/# sourceMappingURL=.+\n?$/m, '').trimEnd();
-      }
-    } else if (file.name.endsWith('.js.map')) {
-      try {
-        sourceMap = JSON.parse(file.text);
-      } catch {
-        // Ignore parse errors
-      }
-    }
+  if (generateSourceMap && output.map) {
+    // Convert Babel's source map to Angular's SourceMap type
+    sourceMap = {
+      version: output.map.version,
+      file: output.map.file,
+      sourceRoot: output.map.sourceRoot ?? '',
+      sources: output.map.sources,
+      sourcesContent: output.map.sourcesContent ?? [],
+      mappings: output.map.mappings,
+    };
+    // Create inline source map comment
+    const sourceMapBase64 = Buffer.from(JSON.stringify(sourceMap)).toString('base64');
+    sourceMapComment = `//# sourceMappingURL=data:application/json;base64,${sourceMapBase64}`;
   }
 
   return {
-    code,
+    code: output.code,
     sourceMap,
     sourceMapComment,
     errors: [],
