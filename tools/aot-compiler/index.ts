@@ -151,11 +151,13 @@ function transformAndEmitWithBabel(
   // Get the import declarations from the translator
   const newImportDeclarations = translator.getImportDeclarations();
 
-  // Transform the AST
+  // Transform the AST using proper Babel path methods
   traverse(ast, {
     // Remove @angular/core imports (they're replaced by runtime imports)
+    // Only remove imports from the original source (which have location info).
+    // Programmatically created imports won't have loc, so they won't be removed.
     ImportDeclaration(path: NodePath<t.ImportDeclaration>) {
-      if (path.node.source.value === '@angular/core') {
+      if (path.node.source.value === '@angular/core' && path.node.loc) {
         path.remove();
       }
     },
@@ -166,28 +168,23 @@ function transformAndEmitWithBabel(
         return;
       }
 
-      // Remove @Component decorator
-      if (path.node.decorators) {
-        path.node.decorators = path.node.decorators.filter((decorator) => {
-          if (t.isCallExpression(decorator.expression)) {
-            const callee = decorator.expression.callee;
-            // Check for @Component()
-            if (t.isIdentifier(callee) && callee.name === 'Component') {
-              return false;
-            }
-            // Check for @namespace.Component()
-            if (t.isMemberExpression(callee) && t.isIdentifier(callee.property)) {
-              if (callee.property.name === 'Component') {
-                return false;
-              }
+      // Remove @Component decorator using path methods
+      const decorators = path.get('decorators');
+      if (Array.isArray(decorators)) {
+        for (const decoratorPath of decorators) {
+          const expr = decoratorPath.node.expression;
+          if (t.isCallExpression(expr)) {
+            const callee = expr.callee;
+            // Check for @Component() or @namespace.Component()
+            const isComponent =
+              (t.isIdentifier(callee) && callee.name === 'Component') ||
+              (t.isMemberExpression(callee) &&
+                t.isIdentifier(callee.property) &&
+                callee.property.name === 'Component');
+            if (isComponent) {
+              decoratorPath.remove();
             }
           }
-          return true;
-        });
-
-        // If no decorators left, remove the decorators array
-        if (path.node.decorators.length === 0) {
-          path.node.decorators = null as any;
         }
       }
 
@@ -218,33 +215,18 @@ function transformAndEmitWithBabel(
         true, // static
       );
 
-      // Add the static properties to the class
-      path.node.body.body.push(factoryMethod, cmpProperty);
+      // Add the static properties to the class body using pushContainer
+      const classBody = path.get('body');
+      classBody.pushContainer('body', factoryMethod);
+      classBody.pushContainer('body', cmpProperty);
     },
 
-    // Handle Program to add imports and additional statements
+    // Add imports and additional statements at the beginning
     Program: {
       exit(path: NodePath<t.Program>) {
-        // Find the position after existing imports
-        let lastImportIndex = -1;
-        for (let i = 0; i < path.node.body.length; i++) {
-          if (t.isImportDeclaration(path.node.body[i])) {
-            lastImportIndex = i;
-          }
-        }
-
-        // Insert new imports after existing imports
-        const insertPosition = lastImportIndex + 1;
-
-        // Add new import declarations
-        for (let i = newImportDeclarations.length - 1; i >= 0; i--) {
-          path.node.body.splice(insertPosition, 0, newImportDeclarations[i]);
-        }
-
-        // Add additional statements (template functions) after imports
-        const statementsPosition = insertPosition + newImportDeclarations.length;
-        for (let i = additionalStatements.length - 1; i >= 0; i--) {
-          path.node.body.splice(statementsPosition, 0, additionalStatements[i]);
+        const nodesToPrepend = [...newImportDeclarations, ...additionalStatements];
+        if (nodesToPrepend.length > 0) {
+          path.unshiftContainer('body', nodesToPrepend);
         }
       },
     },
