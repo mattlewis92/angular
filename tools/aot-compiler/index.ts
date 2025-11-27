@@ -207,7 +207,8 @@ function transformAndEmitWithBabel(
         true, // static
       );
 
-      // Create static ɵcmp property with @__PURE__ annotation
+      // Create static ɵcmp property
+      // Note: @__PURE__ comment is already on the ɵɵdefineComponent call from the translator
       const cmpProperty = t.classProperty(
         t.identifier('ɵcmp'),
         componentDefExpr,
@@ -216,7 +217,6 @@ function transformAndEmitWithBabel(
         false,
         true, // static
       );
-      t.addComment(cmpProperty, 'leading', '@__PURE__', false);
 
       // Add the static properties to the class
       path.node.body.body.push(factoryMethod, cmpProperty);
