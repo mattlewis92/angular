@@ -7,37 +7,23 @@
  */
 
 import {ChangeDetectionStrategy, ViewEncapsulation} from '@angular/compiler';
-import {parse} from '@babel/parser';
+import type {ParseResult} from '@babel/parser';
 import traverse, {NodePath} from '@babel/traverse';
 import * as t from '@babel/types';
 
 import {ExtractedComponentMetadata, InputMetadata} from './types';
 
 /**
- * Parses the @Component decorator from a TypeScript source file and extracts metadata.
- * Uses @babel/parser for parsing without creating a full TypeScript program.
+ * Parses the @Component decorator from a pre-parsed Babel AST and extracts metadata.
  *
- * @param sourceCode The TypeScript source code
- * @param filePath The file path (for error messages)
+ * @param ast The Babel AST (from @babel/parser)
+ * @param sourceCode The original source code (for extracting class body text)
  * @returns The extracted component metadata, or null if no @Component decorator found
  */
 export function parseComponentDecorator(
+  ast: ParseResult<t.File>,
   sourceCode: string,
-  filePath: string,
 ): ExtractedComponentMetadata | null {
-  // Parse the source file with Babel
-  const ast = parse(sourceCode, {
-    sourceType: 'module',
-    plugins: [
-      'typescript',
-      'decorators-legacy',
-      'classProperties',
-      'classPrivateProperties',
-      'classPrivateMethods',
-    ],
-    sourceFilename: filePath,
-  });
-
   let result: ExtractedComponentMetadata | null = null;
 
   // Walk the AST to find a class with @Component decorator

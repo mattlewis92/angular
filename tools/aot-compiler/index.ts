@@ -7,7 +7,7 @@
  */
 
 import {compileComponentFromMetadata, ConstantPool, makeBindingParser} from '@angular/compiler';
-import {parse} from '@babel/parser';
+import {parse, ParseResult} from '@babel/parser';
 import traverse, {NodePath} from '@babel/traverse';
 import generate from '@babel/generator';
 import * as t from '@babel/types';
@@ -27,6 +27,18 @@ import {
 
 // Re-export types for consumers
 export {CompilationResult, CompileComponentOptions, ExtractedComponentMetadata} from './types';
+
+/** Babel parser options for TypeScript with decorators */
+const BABEL_PARSER_OPTIONS = {
+  sourceType: 'module' as const,
+  plugins: [
+    'typescript' as const,
+    'decorators-legacy' as const,
+    'classProperties' as const,
+    'classPrivateProperties' as const,
+    'classPrivateMethods' as const,
+  ],
+};
 
 /**
  * Compiles an Angular standalone component TypeScript file to JavaScript.
@@ -52,8 +64,14 @@ export function compileComponent(
     // 2. Read the source file
     const sourceCode = readFile(absolutePath);
 
-    // 3. Parse the @Component decorator
-    const extracted = parseComponentDecorator(sourceCode, absolutePath);
+    // 3. Parse the source file once with Babel
+    const ast = parse(sourceCode, {
+      ...BABEL_PARSER_OPTIONS,
+      sourceFilename: absolutePath,
+    });
+
+    // 4. Extract @Component decorator metadata from the AST
+    const extracted = parseComponentDecorator(ast, sourceCode);
     if (!extracted) {
       return {
         code: '',
@@ -63,7 +81,7 @@ export function compileComponent(
       };
     }
 
-    // 4. Validate required metadata
+    // 5. Validate required metadata
     if (!extracted.selector) {
       return {
         code: '',
@@ -73,19 +91,20 @@ export function compileComponent(
       };
     }
 
-    // 5. Resolve external templates and styles
+    // 6. Resolve external templates and styles
     const resources = resolveTemplateAndStyles(extracted, absolutePath, readFile);
 
-    // 6. Build R3ComponentMetadata
+    // 7. Build R3ComponentMetadata
     const metadata = buildR3ComponentMetadata(extracted, resources, absolutePath);
 
-    // 7. Compile the component
+    // 8. Compile the component
     const constantPool = new ConstantPool();
     const bindingParser = makeBindingParser(metadata.interpolation);
     const compiledComponent = compileComponentFromMetadata(metadata, constantPool, bindingParser);
 
-    // 8. Use Babel to generate output with source maps
-    const result = transformAndEmitWithBabel(
+    // 9. Transform AST and emit JavaScript with source maps
+    return transformAndEmitWithBabel(
+      ast,
       sourceCode,
       absolutePath,
       extracted.className,
@@ -93,8 +112,6 @@ export function compileComponent(
       compiledComponent.expression,
       generateSourceMap,
     );
-
-    return result;
   } catch (error) {
     return {
       code: '',
@@ -106,9 +123,10 @@ export function compileComponent(
 }
 
 /**
- * Uses Babel to transform the source and emit JavaScript with source maps.
+ * Uses Babel to transform the AST and emit JavaScript with source maps.
  */
 function transformAndEmitWithBabel(
+  ast: ParseResult<t.File>,
   sourceCode: string,
   filePath: string,
   className: string,
@@ -130,19 +148,6 @@ function transformAndEmitWithBabel(
 
   // Get the import declarations from the translator
   const newImportDeclarations = translator.getImportDeclarations();
-
-  // Parse the source file with Babel
-  const ast = parse(sourceCode, {
-    sourceType: 'module',
-    plugins: [
-      'typescript',
-      'decorators-legacy',
-      'classProperties',
-      'classPrivateProperties',
-      'classPrivateMethods',
-    ],
-    sourceFilename: filePath,
-  });
 
   // Transform the AST
   traverse(ast, {
