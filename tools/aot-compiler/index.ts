@@ -7,12 +7,14 @@
  */
 
 import {
+  compileClassDebugInfo,
   compileComponentFromMetadata,
   compileHmrInitializer,
   compileHmrUpdateCallback,
   ConstantPool,
   makeBindingParser,
   outputAst as o,
+  type R3ClassDebugInfo,
   type R3HmrMetadata,
   type SourceMap,
 } from '@angular/compiler';
@@ -158,6 +160,32 @@ function transformAndEmitWithBabel(
   // Translate the component definition expression
   const componentDefExpr = translator.translateExpression(componentExpr);
 
+  // Find the class line number from the AST for debug info
+  // Use the class identifier's location (not the decorator's) to match Angular compiler behavior
+  let classLineNumber = 1;
+  for (const node of ast.program.body) {
+    if (t.isExportNamedDeclaration(node) && t.isClassDeclaration(node.declaration)) {
+      if (node.declaration.id?.name === className && node.declaration.id.loc) {
+        classLineNumber = node.declaration.id.loc.start.line;
+        break;
+      }
+    } else if (t.isClassDeclaration(node) && node.id?.name === className && node.id.loc) {
+      classLineNumber = node.id.loc.start.line;
+      break;
+    }
+  }
+
+  // Generate debug info IIFE (always generated, guarded by ngDevMode at runtime)
+  const debugInfo: R3ClassDebugInfo = {
+    type: new o.ReadVarExpr(className),
+    className: o.literal(className),
+    filePath: o.literal(filePath),
+    lineNumber: o.literal(classLineNumber),
+    forbidOrphanRendering: false,
+  };
+  const debugInfoExpr = compileClassDebugInfo(debugInfo);
+  const debugInfoStmt = t.expressionStatement(translator.translateExpression(debugInfoExpr));
+
   // Generate HMR initializer if enabled
   let hmrInitializerStmt: t.Statement | null = null;
   let hmrUpdateCode: string | undefined;
@@ -244,7 +272,7 @@ function transformAndEmitWithBabel(
       classBody.pushContainer('body', cmpProperty);
     },
 
-    // Add imports and additional statements at the beginning, HMR at the end
+    // Add imports and additional statements at the beginning, debug info and HMR at the end
     Program: {
       exit(path: NodePath<t.Program>) {
         const nodesToPrepend = [...newImportDeclarations, ...additionalStatements];
@@ -252,7 +280,10 @@ function transformAndEmitWithBabel(
           path.unshiftContainer('body', nodesToPrepend);
         }
 
-        // Add HMR initializer at the end of the module (after the class)
+        // Add debug info IIFE after the class
+        path.pushContainer('body', debugInfoStmt);
+
+        // Add HMR initializer at the end of the module (after the class and debug info)
         if (hmrInitializerStmt) {
           path.pushContainer('body', hmrInitializerStmt);
         }
