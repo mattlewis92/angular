@@ -20,6 +20,8 @@ export interface CompilationResult {
   sourceMapComment: string;
   /** Any compilation errors */
   errors: string[];
+  /** HMR update module code (when enableHmr is true) */
+  hmrUpdateCode?: string;
 }
 
 /**
@@ -32,6 +34,8 @@ export interface CompileComponentOptions {
   basePath?: string;
   /** Custom file reader function for external templates/styles */
   readFile?: (path: string) => string;
+  /** Enable HMR code generation (default: false) */
+  enableHmr?: boolean;
 }
 
 /**

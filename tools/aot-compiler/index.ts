@@ -6,7 +6,16 @@
  * found in the LICENSE file at https://angular.dev/license
  */
 
-import {compileComponentFromMetadata, ConstantPool, makeBindingParser} from '@angular/compiler';
+import {
+  compileComponentFromMetadata,
+  compileHmrInitializer,
+  compileHmrUpdateCallback,
+  ConstantPool,
+  makeBindingParser,
+  outputAst as o,
+  type R3HmrMetadata,
+  type SourceMap,
+} from '@angular/compiler';
 import {parse, ParseResult} from '@babel/parser';
 import traverse, {NodePath} from '@babel/traverse';
 import generate from '@babel/generator';
@@ -17,7 +26,6 @@ import * as path from 'path';
 import {BabelBackedTranslator} from './babel-translator';
 import {parseComponentDecorator} from './decorator-parser';
 import {buildR3ComponentMetadata} from './metadata-builder';
-import type {SourceMap} from '@angular/compiler';
 import {
   CompilationResult,
   CompileComponentOptions,
@@ -55,7 +63,7 @@ export function compileComponent(
   componentFilePath: string,
   options: CompileComponentOptions = {},
 ): CompilationResult {
-  const {generateSourceMap = true, readFile = defaultReadFile} = options;
+  const {generateSourceMap = true, readFile = defaultReadFile, enableHmr = false} = options;
 
   try {
     // 1. Resolve absolute path
@@ -112,6 +120,7 @@ export function compileComponent(
       compiledComponent.expression,
       resources,
       generateSourceMap,
+      enableHmr,
     );
   } catch (error) {
     return {
@@ -135,6 +144,7 @@ function transformAndEmitWithBabel(
   componentExpr: import('@angular/compiler').Expression,
   resources: ResolvedResources,
   generateSourceMap: boolean,
+  enableHmr: boolean,
 ): CompilationResult {
   // Create the translator for converting @angular/compiler expressions to Babel AST
   const translator = new BabelBackedTranslator();
@@ -147,6 +157,19 @@ function transformAndEmitWithBabel(
 
   // Translate the component definition expression
   const componentDefExpr = translator.translateExpression(componentExpr);
+
+  // Generate HMR initializer if enabled
+  let hmrInitializerStmt: t.Statement | null = null;
+  let hmrUpdateCode: string | undefined;
+  if (enableHmr) {
+    const hmrMeta = buildHmrMetadata(className, filePath, translator);
+    const hmrInitExpr = compileHmrInitializer(hmrMeta);
+    const translatedHmrInit = translator.translateExpression(hmrInitExpr);
+    hmrInitializerStmt = t.expressionStatement(translatedHmrInit);
+
+    // Generate HMR update module
+    hmrUpdateCode = generateHmrUpdateModule(className, constantPool, componentExpr, hmrMeta);
+  }
 
   // Get the import declarations from the translator
   const newImportDeclarations = translator.getImportDeclarations();
@@ -221,12 +244,17 @@ function transformAndEmitWithBabel(
       classBody.pushContainer('body', cmpProperty);
     },
 
-    // Add imports and additional statements at the beginning
+    // Add imports and additional statements at the beginning, HMR at the end
     Program: {
       exit(path: NodePath<t.Program>) {
         const nodesToPrepend = [...newImportDeclarations, ...additionalStatements];
         if (nodesToPrepend.length > 0) {
           path.unshiftContainer('body', nodesToPrepend);
+        }
+
+        // Add HMR initializer at the end of the module (after the class)
+        if (hmrInitializerStmt) {
+          path.pushContainer('body', hmrInitializerStmt);
         }
       },
     },
@@ -287,7 +315,85 @@ function transformAndEmitWithBabel(
     sourceMap,
     sourceMapComment,
     errors: [],
+    hmrUpdateCode,
   };
+}
+
+/**
+ * Builds HMR metadata from the component's compiled information.
+ */
+function buildHmrMetadata(
+  className: string,
+  filePath: string,
+  translator: BabelBackedTranslator,
+): R3HmrMetadata {
+  // Get namespace dependencies from translator's imports
+  const imports = translator.getImports();
+  const namespaceDependencies = imports
+    .filter((imp) => imp.symbolName === null)
+    .map((imp) => ({
+      moduleName: imp.moduleName,
+      assignedName: imp.localName,
+    }));
+
+  return {
+    type: new o.ReadVarExpr(className),
+    className,
+    filePath,
+    namespaceDependencies,
+    localDependencies: [], // Standalone compiler doesn't have local deps
+  };
+}
+
+/**
+ * Generates the HMR update module code.
+ */
+function generateHmrUpdateModule(
+  className: string,
+  constantPool: ConstantPool,
+  componentExpr: import('@angular/compiler').Expression,
+  hmrMeta: R3HmrMetadata,
+): string {
+  // Build factory expression
+  const factoryExpr = o.arrowFn(
+    [new o.FnParam('__ngFactoryType__')],
+    new o.InstantiateExpr(
+      new o.BinaryOperatorExpr(
+        o.BinaryOperator.Or,
+        o.variable('__ngFactoryType__'),
+        o.variable(className),
+      ),
+      [],
+    ),
+  );
+
+  const definitions = [
+    {
+      name: 'ɵfac',
+      initializer: factoryExpr,
+      statements: [],
+    },
+    {
+      name: 'ɵcmp',
+      initializer: componentExpr,
+      statements: [],
+    },
+  ];
+
+  const updateCallback = compileHmrUpdateCallback(definitions, constantPool.statements, hmrMeta);
+
+  // Translate to Babel and generate code
+  const hmrTranslator = new BabelBackedTranslator();
+  const funcDecl = hmrTranslator.translateStatement(updateCallback);
+
+  // Get import declarations needed by the HMR update code
+  const hmrImports = hmrTranslator.getImportDeclarations();
+
+  // Wrap in export default with imports
+  const exportDefault = t.exportDefaultDeclaration(funcDecl as t.FunctionDeclaration);
+  const program = t.program([...hmrImports, exportDefault]);
+
+  return generate(program, {comments: true, compact: false}).code;
 }
 
 /**

@@ -252,7 +252,14 @@ export class BabelBackedTranslator implements o.ExpressionVisitor, o.StatementVi
         ? t.stringLiteral(ast.url)
         : ast.url.visitExpression(this, context);
 
-    return t.callExpression(t.import(), [source]);
+    const importCall = t.callExpression(t.import(), [source]);
+
+    // Add comment (e.g. @vite-ignore) if specified
+    if (ast.urlComment) {
+      t.addComment(importCall, 'leading', ` ${ast.urlComment} `, false);
+    }
+
+    return importCall;
   }
 
   visitNotExpr(ast: o.NotExpr, context: any): t.Expression {
