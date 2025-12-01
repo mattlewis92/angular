@@ -68,6 +68,86 @@ const BABEL_PARSER_OPTIONS = {
 };
 
 /**
+ * Result of parsing a TypeScript file.
+ */
+interface ParsedFile {
+  ast: ParseResult<t.File>;
+  sourceCode: string;
+  absolutePath: string;
+}
+
+/**
+ * Parses a TypeScript file and returns the AST and source code.
+ */
+function parseFile(
+  filePath: string,
+  readFile: (path: string) => string = defaultReadFile,
+): ParsedFile {
+  const absolutePath = path.resolve(filePath);
+  const sourceCode = readFile(absolutePath);
+  const ast = parse(sourceCode, {
+    ...BABEL_PARSER_OPTIONS,
+    sourceFilename: absolutePath,
+  });
+  return {ast, sourceCode, absolutePath};
+}
+
+/**
+ * Compiles a single extracted component and returns the compiled data.
+ */
+function compileSingleComponent(
+  extracted: ExtractedComponentMetadata,
+  absolutePath: string,
+  readFile: (path: string) => string,
+  constantPool: ConstantPool,
+): CompiledComponentData {
+  const resources = resolveTemplateAndStyles(extracted, absolutePath, readFile);
+  const metadata = buildR3ComponentMetadata(extracted, resources, absolutePath);
+  const bindingParser = makeBindingParser(metadata.interpolation);
+  const compiledComponent = compileComponentFromMetadata(metadata, constantPool, bindingParser);
+
+  return {
+    className: extracted.className,
+    componentExpr: compiledComponent.expression,
+    resources,
+    decoratorArgsNode: extracted.decoratorArgsNode,
+  };
+}
+
+/**
+ * Finds the line number of a class declaration in the AST.
+ */
+function findClassLineNumber(ast: ParseResult<t.File>, className: string): number {
+  for (const node of ast.program.body) {
+    if (t.isExportNamedDeclaration(node) && t.isClassDeclaration(node.declaration)) {
+      if (node.declaration.id?.name === className && node.declaration.id.loc) {
+        return node.declaration.id.loc.start.line;
+      }
+    } else if (t.isClassDeclaration(node) && node.id?.name === className && node.id.loc) {
+      return node.id.loc.start.line;
+    }
+  }
+  return 1;
+}
+
+/**
+ * Collects all named imports from the AST.
+ */
+function collectNamedImports(ast: ParseResult<t.File>): string[] {
+  const namedImports: string[] = [];
+  for (const node of ast.program.body) {
+    if (t.isImportDeclaration(node)) {
+      for (const specifier of node.specifiers) {
+        if (t.isImportSpecifier(specifier) && t.isIdentifier(specifier.local)) {
+          namedImports.push(specifier.local.name);
+        }
+      }
+    }
+  }
+  return namedImports;
+}
+
+/**
  * Compiles all Angular decorators in a TypeScript file to JavaScript.
  *
  * This function parses all @Component decorators from the TypeScript source,
@@ -88,19 +168,10 @@ export function compileAngularDecorators(
   const {generateSourceMap = true, readFile = defaultReadFile, enableHmr = false} = options;
 
   try {
-    // 1. Resolve absolute path
-    const absolutePath = path.resolve(filePath);
+    // 1. Parse the source file
+    const {ast, sourceCode, absolutePath} = parseFile(filePath, readFile);
 
-    // 2. Read the source file
-    const sourceCode = readFile(absolutePath);
-
-    // 3. Parse the source file once with Babel
-    const ast = parse(sourceCode, {
-      ...BABEL_PARSER_OPTIONS,
-      sourceFilename: absolutePath,
-    });
-
-    // 4. Extract ALL @Component decorator metadata from the AST
+    // 2. Extract ALL @Component decorator metadata from the AST
     const extractedComponents = parseComponentDecorators(ast, sourceCode);
     if (extractedComponents.length === 0) {
       return {
@@ -111,7 +182,7 @@ export function compileAngularDecorators(
       };
     }
 
-    // 5. Validate and compile each component, collecting errors and compiled data
+    // 3. Validate and compile each component, collecting errors and compiled data
     const errors: string[] = [];
     const compiledComponents: CompiledComponentData[] = [];
     const constantPool = new ConstantPool();
@@ -124,27 +195,9 @@ export function compileAngularDecorators(
       }
 
       try {
-        // Resolve external templates and styles
-        const resources = resolveTemplateAndStyles(extracted, absolutePath, readFile);
-
-        // Build R3ComponentMetadata
-        const metadata = buildR3ComponentMetadata(extracted, resources, absolutePath);
-
-        // Compile the component
-        const bindingParser = makeBindingParser(metadata.interpolation);
-        const compiledComponent = compileComponentFromMetadata(
-          metadata,
-          constantPool,
-          bindingParser,
+        compiledComponents.push(
+          compileSingleComponent(extracted, absolutePath, readFile, constantPool),
         );
-
-        // Collect compiled data for later transformation
-        compiledComponents.push({
-          className: extracted.className,
-          componentExpr: compiledComponent.expression,
-          resources,
-          decoratorArgsNode: extracted.decoratorArgsNode,
-        });
       } catch (componentError) {
         errors.push(
           `${extracted.className}: ${componentError instanceof Error ? componentError.message : String(componentError)}`,
@@ -208,80 +261,39 @@ export function compileHmrUpdateCode(
   const {readFile = defaultReadFile} = options;
 
   try {
-    // 1. Resolve absolute path
-    const absolutePath = path.resolve(filePath);
+    // 1. Parse the source file
+    const {ast, sourceCode, absolutePath} = parseFile(filePath, readFile);
 
-    // 2. Read the source file
-    const sourceCode = readFile(absolutePath);
-
-    // 3. Parse the source file with Babel
-    const ast = parse(sourceCode, {
-      ...BABEL_PARSER_OPTIONS,
-      sourceFilename: absolutePath,
-    });
-
-    // 4. Extract all component decorators and find the target
+    // 2. Extract all component decorators and find the target
     const extractedComponents = parseComponentDecorators(ast, sourceCode);
     const targetComponent = extractedComponents.find((c) => c.className === className);
 
-    if (!targetComponent) {
+    if (!targetComponent || !targetComponent.selector) {
       return null;
     }
 
-    // 5. Validate required metadata
-    if (!targetComponent.selector) {
-      return null;
-    }
-
-    // 6. Resolve external templates and styles
-    const resources = resolveTemplateAndStyles(targetComponent, absolutePath, readFile);
-
-    // 7. Build R3ComponentMetadata and compile
-    const metadata = buildR3ComponentMetadata(targetComponent, resources, absolutePath);
+    // 3. Compile the component
     const constantPool = new ConstantPool();
-    const bindingParser = makeBindingParser(metadata.interpolation);
-    const compiledComponent = compileComponentFromMetadata(metadata, constantPool, bindingParser);
+    const compiled = compileSingleComponent(targetComponent, absolutePath, readFile, constantPool);
 
-    // 8. Find class line number
-    let classLineNumber = 1;
-    for (const node of ast.program.body) {
-      if (t.isExportNamedDeclaration(node) && t.isClassDeclaration(node.declaration)) {
-        if (node.declaration.id?.name === className && node.declaration.id.loc) {
-          classLineNumber = node.declaration.id.loc.start.line;
-          break;
-        }
-      } else if (t.isClassDeclaration(node) && node.id?.name === className && node.id.loc) {
-        classLineNumber = node.id.loc.start.line;
-        break;
-      }
-    }
+    // 4. Get class line number and named imports
+    const classLineNumber = findClassLineNumber(ast, className);
+    const namedImports = collectNamedImports(ast);
 
-    // 9. Collect named imports for HMR localDependencies
-    const namedImports: string[] = [];
-    for (const node of ast.program.body) {
-      if (t.isImportDeclaration(node)) {
-        for (const specifier of node.specifiers) {
-          if (t.isImportSpecifier(specifier) && t.isIdentifier(specifier.local)) {
-            namedImports.push(specifier.local.name);
-          }
-        }
-      }
-    }
-
-    // 10. Build HMR metadata and generate update module
+    // 5. Build HMR metadata and generate update module
     // First translate constant pool and component to register imports in the translator
     const translator = new BabelBackedTranslator();
     for (const stmt of constantPool.statements) {
       translator.translateStatement(stmt);
     }
-    translator.translateExpression(compiledComponent.expression);
+    translator.translateExpression(compiled.componentExpr);
 
     const hmrMeta = buildHmrMetadata(className, absolutePath, translator, namedImports);
 
     return generateHmrUpdateModule(
       className,
       constantPool,
-      compiledComponent.expression,
+      compiled.componentExpr,
       hmrMeta,
       targetComponent.decoratorArgsNode,
       classLineNumber,
