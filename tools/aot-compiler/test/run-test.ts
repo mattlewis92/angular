@@ -6,49 +6,193 @@
  * found in the LICENSE file at https://angular.dev/license
  */
 
+import {diffLines} from 'diff';
+import * as fs from 'fs';
 import * as path from 'path';
+import * as prettier from 'prettier';
 
 import {compileComponent} from '../index';
 
-// Test with inline template component
-console.log('=== Testing inline template component ===\n');
-const sampleResult = compileComponent(path.join(__dirname, 'sample.component.ts'), {
-  enableHmr: true,
-});
+// ANSI color codes for terminal output
+const colors = {
+  red: '\x1b[31m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  cyan: '\x1b[36m',
+  reset: '\x1b[0m',
+  dim: '\x1b[2m',
+};
 
-if (sampleResult.errors.length > 0) {
-  console.error('Errors:', sampleResult.errors);
-} else {
-  console.log('SUCCESS! Generated code:\n');
-  console.log(sampleResult.code);
-  if (sampleResult.hmrUpdateCode) {
-    console.log('\nHMR Update Code:');
-    console.log(sampleResult.hmrUpdateCode);
+/**
+ * Formats JavaScript code using prettier for consistent comparison.
+ */
+async function formatCode(code: string): Promise<string> {
+  try {
+    return await prettier.format(code, {
+      parser: 'babel',
+      printWidth: 100,
+      singleQuote: true,
+      trailingComma: 'all',
+    });
+  } catch {
+    // If prettier fails, return original code
+    return code;
   }
-  if (sampleResult.sourceMap) {
-    console.log('\nSource map:');
-    console.log(JSON.stringify(sampleResult.sourceMap, null, 2));
+}
+
+/**
+ * Reads an expected output file if it exists.
+ */
+function readExpectedFile(filePath: string): string | null {
+  if (fs.existsSync(filePath)) {
+    return fs.readFileSync(filePath, 'utf-8');
   }
+  return null;
+}
+
+/**
+ * Shows a colored diff between two code strings.
+ * Returns true if they match, false if there are differences.
+ */
+function showDiff(expected: string, actual: string, label: string): boolean {
+  const diff = diffLines(expected, actual);
+
+  let hasChanges = false;
+  for (const part of diff) {
+    if (part.added || part.removed) {
+      hasChanges = true;
+      break;
+    }
+  }
+
+  if (!hasChanges) {
+    // tslint:disable-next-line:no-console
+    console.log(`${colors.green}✓ ${label}: Output matches expected${colors.reset}\n`);
+    return true;
+  }
+
+  // tslint:disable-next-line:no-console
+  console.log(`${colors.yellow}⚠ ${label}: Differences found${colors.reset}\n`);
+  // tslint:disable-next-line:no-console
+  console.log(`${colors.dim}--- Expected${colors.reset}`);
+  // tslint:disable-next-line:no-console
+  console.log(`${colors.dim}+++ Actual${colors.reset}\n`);
+
+  for (const part of diff) {
+    const lines = part.value.split('\n').filter((line) => line.length > 0);
+    for (const line of lines) {
+      if (part.added) {
+        // tslint:disable-next-line:no-console
+        console.log(`${colors.green}+ ${line}${colors.reset}`);
+      } else if (part.removed) {
+        // tslint:disable-next-line:no-console
+        console.log(`${colors.red}- ${line}${colors.reset}`);
+      } else {
+        // tslint:disable-next-line:no-console
+        console.log(`  ${line}`);
+      }
+    }
+  }
+  // tslint:disable-next-line:no-console
   console.log('\n');
+  return false;
 }
 
-// Test with external template component
-console.log('=== Testing external template component ===\n');
-const externalResult = compileComponent(path.join(__dirname, 'external.component.ts'), {
-  enableHmr: true,
-});
+/**
+ * Tests a component by compiling it and comparing against expected output files.
+ *
+ * Expected files:
+ *   - *.expected.js - Expected component output
+ *   - *.expected.hmr.js - Expected HMR update code
+ */
+async function testComponent(componentPath: string, name: string): Promise<boolean> {
+  // tslint:disable-next-line:no-console
+  console.log(`${colors.cyan}=== Testing ${name} ===${colors.reset}\n`);
 
-if (externalResult.errors.length > 0) {
-  console.error('Errors:', externalResult.errors);
-} else {
-  console.log('SUCCESS! Generated code:\n');
-  console.log(externalResult.code);
-  if (externalResult.hmrUpdateCode) {
-    console.log('\nHMR Update Code:');
-    console.log(externalResult.hmrUpdateCode);
+  // Compile with our AOT compiler
+  const aotResult = compileComponent(componentPath, {enableHmr: true});
+
+  if (aotResult.errors.length > 0) {
+    // tslint:disable-next-line:no-console
+    console.error(`${colors.red}AOT Compiler Errors:${colors.reset}`, aotResult.errors);
+    return false;
   }
-  if (externalResult.sourceMap) {
-    console.log('\nSource map:');
-    console.log(JSON.stringify(externalResult.sourceMap, null, 2));
+
+  const expectedCodePath = componentPath.replace('.ts', '.expected.js');
+  const expectedHmrPath = componentPath.replace('.ts', '.expected.hmr.js');
+
+  const expectedCode = readExpectedFile(expectedCodePath);
+  const expectedHmr = readExpectedFile(expectedHmrPath);
+
+  let allMatched = true;
+
+  // Compare main component output
+  if (expectedCode) {
+    const [formattedExpected, formattedActual] = await Promise.all([
+      formatCode(expectedCode),
+      formatCode(aotResult.code),
+    ]);
+    const matches = showDiff(formattedExpected, formattedActual, `${name} - Component`);
+    allMatched = allMatched && matches;
+  } else {
+    // tslint:disable-next-line:no-console
+    console.log(`${colors.yellow}No expected output file found.${colors.reset}`);
+    // tslint:disable-next-line:no-console
+    console.log(`${colors.dim}Create: ${expectedCodePath}${colors.reset}\n`);
+    // tslint:disable-next-line:no-console
+    console.log(`${colors.cyan}AOT Compiler Output:${colors.reset}\n`);
+    const formattedAot = await formatCode(aotResult.code);
+    // tslint:disable-next-line:no-console
+    console.log(formattedAot);
+  }
+
+  // Compare HMR update code
+  if (aotResult.hmrUpdateCode) {
+    if (expectedHmr) {
+      const [formattedExpected, formattedActual] = await Promise.all([
+        formatCode(expectedHmr),
+        formatCode(aotResult.hmrUpdateCode),
+      ]);
+      const matches = showDiff(formattedExpected, formattedActual, `${name} - HMR Update`);
+      allMatched = allMatched && matches;
+    } else {
+      // tslint:disable-next-line:no-console
+      console.log(`${colors.yellow}No expected HMR output file found.${colors.reset}`);
+      // tslint:disable-next-line:no-console
+      console.log(`${colors.dim}Create: ${expectedHmrPath}${colors.reset}\n`);
+      // tslint:disable-next-line:no-console
+      console.log(`${colors.cyan}HMR Update Code:${colors.reset}\n`);
+      const formattedHmr = await formatCode(aotResult.hmrUpdateCode);
+      // tslint:disable-next-line:no-console
+      console.log(formattedHmr);
+    }
+  }
+
+  return allMatched;
+}
+
+// Main test runner
+async function main(): Promise<void> {
+  const testDir = __dirname;
+  let allPassed = true;
+
+  // Test inline template component
+  const inlineResult = await testComponent(
+    path.join(testDir, 'sample.component.ts'),
+    'Inline Template Component',
+  );
+  allPassed = allPassed && inlineResult;
+
+  // Test external template component
+  const externalResult = await testComponent(
+    path.join(testDir, 'external.component.ts'),
+    'External Template Component',
+  );
+  allPassed = allPassed && externalResult;
+
+  if (!allPassed) {
+    process.exit(1);
   }
 }
+
+main().catch(console.error);
