@@ -28,7 +28,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {BabelBackedTranslator} from './babel-translator';
-import {parseComponentDecorator} from './decorator-parser';
+import {parseComponentDecorators} from './decorator-parser';
 import {buildR3ComponentMetadata} from './metadata-builder';
 import {
   CompilationResult,
@@ -38,7 +38,22 @@ import {
 } from './types';
 
 // Re-export types for consumers
-export {CompilationResult, CompileComponentOptions, ExtractedComponentMetadata} from './types';
+export {
+  AngularDecoratorType,
+  CompilationResult,
+  CompileComponentOptions,
+  ExtractedComponentMetadata,
+} from './types';
+
+/**
+ * Internal structure to hold compiled component data before AST transformation.
+ */
+interface CompiledComponentData {
+  className: string;
+  componentExpr: import('@angular/compiler').Expression;
+  resources: ResolvedResources;
+  decoratorArgsNode: t.ObjectExpression | null;
+}
 
 /** Babel parser options for TypeScript with decorators */
 const BABEL_PARSER_OPTIONS = {
@@ -53,25 +68,28 @@ const BABEL_PARSER_OPTIONS = {
 };
 
 /**
- * Compiles an Angular standalone component TypeScript file to JavaScript.
+ * Compiles all Angular decorators in a TypeScript file to JavaScript.
  *
- * This function parses the @Component decorator from the TypeScript source,
- * resolves external templates and styles, and compiles the component using
+ * This function parses all @Component decorators from the TypeScript source,
+ * resolves external templates and styles, and compiles each component using
  * Angular's compiler APIs. It outputs JavaScript code with source map support.
  *
- * @param componentFilePath Absolute path to the component TypeScript file
+ * Currently supports @Component decorators. Future versions will support
+ * @Directive, @Pipe, @Injectable, and @NgModule.
+ *
+ * @param filePath Absolute path to the TypeScript file
  * @param options Compilation options
  * @returns The compilation result with JavaScript code and source map
  */
-export function compileComponent(
-  componentFilePath: string,
+export function compileAngularDecorators(
+  filePath: string,
   options: CompileComponentOptions = {},
 ): CompilationResult {
   const {generateSourceMap = true, readFile = defaultReadFile, enableHmr = false} = options;
 
   try {
     // 1. Resolve absolute path
-    const absolutePath = path.resolve(componentFilePath);
+    const absolutePath = path.resolve(filePath);
 
     // 2. Read the source file
     const sourceCode = readFile(absolutePath);
@@ -82,9 +100,9 @@ export function compileComponent(
       sourceFilename: absolutePath,
     });
 
-    // 4. Extract @Component decorator metadata from the AST
-    const extracted = parseComponentDecorator(ast, sourceCode);
-    if (!extracted) {
+    // 4. Extract ALL @Component decorator metadata from the AST
+    const extractedComponents = parseComponentDecorators(ast, sourceCode);
+    if (extractedComponents.length === 0) {
       return {
         code: '',
         sourceMap: null,
@@ -93,40 +111,73 @@ export function compileComponent(
       };
     }
 
-    // 5. Validate required metadata
-    if (!extracted.selector) {
+    // 5. Validate and compile each component, collecting errors and compiled data
+    const errors: string[] = [];
+    const compiledComponents: CompiledComponentData[] = [];
+    const constantPool = new ConstantPool();
+
+    for (const extracted of extractedComponents) {
+      // Validate required metadata
+      if (!extracted.selector) {
+        errors.push(`${extracted.className}: Component must have a selector`);
+        continue;
+      }
+
+      try {
+        // Resolve external templates and styles
+        const resources = resolveTemplateAndStyles(extracted, absolutePath, readFile);
+
+        // Build R3ComponentMetadata
+        const metadata = buildR3ComponentMetadata(extracted, resources, absolutePath);
+
+        // Compile the component
+        const bindingParser = makeBindingParser(metadata.interpolation);
+        const compiledComponent = compileComponentFromMetadata(
+          metadata,
+          constantPool,
+          bindingParser,
+        );
+
+        // Collect compiled data for later transformation
+        compiledComponents.push({
+          className: extracted.className,
+          componentExpr: compiledComponent.expression,
+          resources,
+          decoratorArgsNode: extracted.decoratorArgsNode,
+        });
+      } catch (componentError) {
+        errors.push(
+          `${extracted.className}: ${componentError instanceof Error ? componentError.message : String(componentError)}`,
+        );
+      }
+    }
+
+    // If all components failed, return errors
+    if (compiledComponents.length === 0) {
       return {
         code: '',
         sourceMap: null,
         sourceMapComment: '',
-        errors: ['Component must have a selector'],
+        errors,
       };
     }
 
-    // 6. Resolve external templates and styles
-    const resources = resolveTemplateAndStyles(extracted, absolutePath, readFile);
-
-    // 7. Build R3ComponentMetadata
-    const metadata = buildR3ComponentMetadata(extracted, resources, absolutePath);
-
-    // 8. Compile the component
-    const constantPool = new ConstantPool();
-    const bindingParser = makeBindingParser(metadata.interpolation);
-    const compiledComponent = compileComponentFromMetadata(metadata, constantPool, bindingParser);
-
-    // 9. Transform AST and emit JavaScript with source maps
-    return transformAndEmitWithBabel(
+    // 6. Transform AST and emit JavaScript with source maps
+    const result = transformAndEmitWithBabel(
       ast,
       sourceCode,
       absolutePath,
-      extracted.className,
+      compiledComponents,
       constantPool,
-      compiledComponent.expression,
-      resources,
       generateSourceMap,
       enableHmr,
-      extracted.decoratorArgsNode,
     );
+
+    // Add any validation errors and compiled class names
+    result.errors.push(...errors);
+    result.compiledClasses = compiledComponents.map((c) => c.className);
+
+    return result;
   } catch (error) {
     return {
       code: '',
@@ -138,66 +189,53 @@ export function compileComponent(
 }
 
 /**
+ * Internal structure to hold per-component transformation data.
+ */
+interface ComponentTransformData {
+  className: string;
+  componentDefExpr: t.Expression;
+  debugInfoStmt: t.Statement;
+  classMetadataStmt: t.Statement | null;
+  hmrInitializerStmt: t.Statement | null;
+  classLineNumber: number;
+  resources: ResolvedResources;
+}
+
+/**
  * Uses Babel to transform the AST and emit JavaScript with source maps.
+ * Handles multiple components in a single file.
  */
 function transformAndEmitWithBabel(
   ast: ParseResult<t.File>,
   sourceCode: string,
   filePath: string,
-  className: string,
+  compiledComponents: CompiledComponentData[],
   constantPool: ConstantPool,
-  componentExpr: import('@angular/compiler').Expression,
-  resources: ResolvedResources,
   generateSourceMap: boolean,
   enableHmr: boolean,
-  decoratorArgsNode: t.ObjectExpression | null,
 ): CompilationResult {
   // Create the translator for converting @angular/compiler expressions to Babel AST
   const translator = new BabelBackedTranslator();
 
-  // Translate constant pool statements (template functions, etc.)
+  // Translate constant pool statements (template functions, etc.) - shared across all components
   const additionalStatements: t.Statement[] = [];
   for (const stmt of constantPool.statements) {
     additionalStatements.push(translator.translateStatement(stmt));
   }
 
-  // Translate the component definition expression
-  const componentDefExpr = translator.translateExpression(componentExpr);
-
-  // Find the class line number from the AST for debug info
-  // Use the class identifier's location (not the decorator's) to match Angular compiler behavior
-  let classLineNumber = 1;
+  // Build a map of class line numbers from the AST
+  const classLineNumbers = new Map<string, number>();
   for (const node of ast.program.body) {
     if (t.isExportNamedDeclaration(node) && t.isClassDeclaration(node.declaration)) {
-      if (node.declaration.id?.name === className && node.declaration.id.loc) {
-        classLineNumber = node.declaration.id.loc.start.line;
-        break;
+      if (node.declaration.id?.name && node.declaration.id.loc) {
+        classLineNumbers.set(node.declaration.id.name, node.declaration.id.loc.start.line);
       }
-    } else if (t.isClassDeclaration(node) && node.id?.name === className && node.id.loc) {
-      classLineNumber = node.id.loc.start.line;
-      break;
+    } else if (t.isClassDeclaration(node) && node.id?.name && node.id.loc) {
+      classLineNumbers.set(node.id.name, node.id.loc.start.line);
     }
   }
 
-  // Generate debug info IIFE (always generated, guarded by ngDevMode at runtime)
-  const debugInfo: R3ClassDebugInfo = {
-    type: new o.ReadVarExpr(className),
-    className: o.literal(className),
-    filePath: o.literal(filePath),
-    lineNumber: o.literal(classLineNumber),
-    forbidOrphanRendering: false,
-  };
-  const debugInfoExpr = compileClassDebugInfo(debugInfo);
-  const debugInfoStmt = t.expressionStatement(translator.translateExpression(debugInfoExpr));
-
-  // Generate setClassMetadata IIFE if we have decorator args
-  let classMetadataStmt: t.Statement | null = null;
-  if (decoratorArgsNode) {
-    classMetadataStmt = buildSetClassMetadataIIFE(className, decoratorArgsNode, translator);
-  }
-
-  // Collect all named imports for HMR localDependencies
-  // These are passed to ɵɵreplaceMetadata so the HMR update function can access them
+  // Collect all named imports for HMR localDependencies (shared across all components)
   const namedImports: string[] = [];
   for (const node of ast.program.body) {
     if (t.isImportDeclaration(node)) {
@@ -209,24 +247,62 @@ function transformAndEmitWithBabel(
     }
   }
 
-  // Generate HMR initializer if enabled
-  let hmrInitializerStmt: t.Statement | null = null;
-  let hmrUpdateCode: string | undefined;
-  if (enableHmr) {
-    const hmrMeta = buildHmrMetadata(className, filePath, translator, namedImports);
-    const hmrInitExpr = compileHmrInitializer(hmrMeta);
-    const translatedHmrInit = translator.translateExpression(hmrInitExpr);
-    hmrInitializerStmt = t.expressionStatement(translatedHmrInit);
+  // Process each component and build transformation data
+  const componentTransforms = new Map<string, ComponentTransformData>();
+  const hmrUpdateCodes: Record<string, string> = {};
 
-    // Generate HMR update module
-    hmrUpdateCode = generateHmrUpdateModule(
+  for (const compiled of compiledComponents) {
+    const {className, componentExpr, resources, decoratorArgsNode} = compiled;
+    const classLineNumber = classLineNumbers.get(className) ?? 1;
+
+    // Translate the component definition expression
+    const componentDefExpr = translator.translateExpression(componentExpr);
+
+    // Generate debug info IIFE
+    const debugInfo: R3ClassDebugInfo = {
+      type: new o.ReadVarExpr(className),
+      className: o.literal(className),
+      filePath: o.literal(filePath),
+      lineNumber: o.literal(classLineNumber),
+      forbidOrphanRendering: false,
+    };
+    const debugInfoExpr = compileClassDebugInfo(debugInfo);
+    const debugInfoStmt = t.expressionStatement(translator.translateExpression(debugInfoExpr));
+
+    // Generate setClassMetadata IIFE if we have decorator args
+    let classMetadataStmt: t.Statement | null = null;
+    if (decoratorArgsNode) {
+      classMetadataStmt = buildSetClassMetadataIIFE(className, decoratorArgsNode, translator);
+    }
+
+    // Generate HMR initializer if enabled
+    let hmrInitializerStmt: t.Statement | null = null;
+    if (enableHmr) {
+      const hmrMeta = buildHmrMetadata(className, filePath, translator, namedImports);
+      const hmrInitExpr = compileHmrInitializer(hmrMeta);
+      const translatedHmrInit = translator.translateExpression(hmrInitExpr);
+      hmrInitializerStmt = t.expressionStatement(translatedHmrInit);
+
+      // Generate HMR update module for this component
+      hmrUpdateCodes[className] = generateHmrUpdateModule(
+        className,
+        constantPool,
+        componentExpr,
+        hmrMeta,
+        decoratorArgsNode,
+        classLineNumber,
+      );
+    }
+
+    componentTransforms.set(className, {
       className,
-      constantPool,
-      componentExpr,
-      hmrMeta,
-      decoratorArgsNode,
+      componentDefExpr,
+      debugInfoStmt,
+      classMetadataStmt,
+      hmrInitializerStmt,
       classLineNumber,
-    );
+      resources,
+    });
   }
 
   // Get the import declarations from the translator
@@ -234,11 +310,13 @@ function transformAndEmitWithBabel(
 
   // Transform the AST using proper Babel path methods
   traverse(ast, {
-    // Find and transform the target class
+    // Find and transform each component class
     ClassDeclaration(path: NodePath<t.ClassDeclaration>) {
-      if (path.node.id?.name !== className) {
-        return;
-      }
+      const currentClassName = path.node.id?.name;
+      if (!currentClassName) return;
+
+      const transformData = componentTransforms.get(currentClassName);
+      if (!transformData) return;
 
       // Remove @Component decorator using path methods
       const decorators = path.get('decorators');
@@ -261,14 +339,17 @@ function transformAndEmitWithBabel(
       }
 
       // Create static block for ɵfac with named function to match Angular compiler output
-      // static { this.ɵfac = function ClassName_Factory(__ngFactoryType__) { return new (...) }; }
       const factoryFunction = t.functionExpression(
-        t.identifier(`${className}_Factory`),
+        t.identifier(`${currentClassName}_Factory`),
         [t.identifier('__ngFactoryType__')],
         t.blockStatement([
           t.returnStatement(
             t.newExpression(
-              t.logicalExpression('||', t.identifier('__ngFactoryType__'), t.identifier(className)),
+              t.logicalExpression(
+                '||',
+                t.identifier('__ngFactoryType__'),
+                t.identifier(currentClassName),
+              ),
               [],
             ),
           ),
@@ -285,18 +366,17 @@ function transformAndEmitWithBabel(
       ]);
 
       // Create static block for ɵcmp
-      // static { this.ɵcmp = /*@__PURE__*/ i0.ɵɵdefineComponent({...}); }
       const cmpStaticBlock = t.staticBlock([
         t.expressionStatement(
           t.assignmentExpression(
             '=',
             t.memberExpression(t.thisExpression(), t.identifier('ɵcmp')),
-            componentDefExpr,
+            transformData.componentDefExpr,
           ),
         ),
       ]);
 
-      // Add the static blocks to the class body using pushContainer
+      // Add the static blocks to the class body
       const classBody = path.get('body');
       classBody.pushContainer('body', factoryStaticBlock);
       classBody.pushContainer('body', cmpStaticBlock);
@@ -326,24 +406,29 @@ function transformAndEmitWithBabel(
           }
         }
 
-        // Add setClassMetadata IIFE after the class (before debug info)
-        if (classMetadataStmt) {
-          path.pushContainer('body', classMetadataStmt);
-        }
+        // Add metadata and debug info for all components (in order they were compiled)
+        for (const compiled of compiledComponents) {
+          const transformData = componentTransforms.get(compiled.className);
+          if (!transformData) continue;
 
-        // Add debug info IIFE after the class
-        path.pushContainer('body', debugInfoStmt);
+          // Add setClassMetadata IIFE
+          if (transformData.classMetadataStmt) {
+            path.pushContainer('body', transformData.classMetadataStmt);
+          }
 
-        // Add HMR initializer at the end of the module (after the class and debug info)
-        if (hmrInitializerStmt) {
-          path.pushContainer('body', hmrInitializerStmt);
+          // Add debug info IIFE
+          path.pushContainer('body', transformData.debugInfoStmt);
+
+          // Add HMR initializer
+          if (transformData.hmrInitializerStmt) {
+            path.pushContainer('body', transformData.hmrInitializerStmt);
+          }
         }
       },
     },
   });
 
   // Generate output code with source maps
-  // Use absolute path for sourceFileName to match Angular compiler's source locations
   const output = generate(
     ast,
     {
@@ -363,7 +448,14 @@ function transformAndEmitWithBabel(
     // Build a map of source URL to content for deduplication and content lookup
     const sourceContentMap = new Map<string, string | null>();
     sourceContentMap.set(filePath, sourceCode);
-    sourceContentMap.set(resources.templateUrl, resources.template);
+
+    // Add all component template URLs
+    for (const compiled of compiledComponents) {
+      const transformData = componentTransforms.get(compiled.className);
+      if (transformData) {
+        sourceContentMap.set(transformData.resources.templateUrl, transformData.resources.template);
+      }
+    }
 
     // Deduplicate sources and build sourcesContent with proper content
     const uniqueSources: string[] = [];
@@ -372,7 +464,6 @@ function transformAndEmitWithBabel(
     for (const source of output.map.sources) {
       if (!uniqueSources.includes(source)) {
         uniqueSources.push(source);
-        // Look up content: first try exact match, then try if this is the component file
         const content = sourceContentMap.get(source) ?? null;
         uniqueSourcesContent.push(content);
       }
@@ -397,7 +488,8 @@ function transformAndEmitWithBabel(
     sourceMap,
     sourceMapComment,
     errors: [],
-    hmrUpdateCode,
+    // Map of class name to HMR update code
+    hmrUpdateCode: Object.keys(hmrUpdateCodes).length > 0 ? hmrUpdateCodes : undefined,
   };
 }
 
@@ -620,18 +712,18 @@ function defaultReadFile(filePath: string): string {
 /**
  * CLI entry point for direct execution.
  *
- * Usage: npx ts-node tools/aot-compiler/index.ts <component-file.ts>
+ * Usage: npx ts-node tools/aot-compiler/index.ts <file.ts>
  */
 if (require.main === module) {
   const args = process.argv.slice(2);
 
   if (args.length === 0) {
-    console.error('Usage: ts-node tools/aot-compiler/index.ts <component-file.ts>');
+    console.error('Usage: ts-node tools/aot-compiler/index.ts <file.ts>');
     process.exit(1);
   }
 
-  const componentPath = args[0];
-  const result = compileComponent(componentPath);
+  const filePath = args[0];
+  const result = compileAngularDecorators(filePath);
 
   if (result.errors.length > 0) {
     console.error('Compilation errors:');
@@ -642,8 +734,10 @@ if (require.main === module) {
   }
 
   // Output the compiled code with source map comment
+  // tslint:disable-next-line:no-console
   console.log(result.code);
   if (result.sourceMapComment) {
+    // tslint:disable-next-line:no-console
     console.log(result.sourceMapComment);
   }
 }

@@ -10,6 +10,13 @@ import {ChangeDetectionStrategy, SourceMap, ViewEncapsulation} from '@angular/co
 import type * as t from '@babel/types';
 
 /**
+ * Angular decorator types that can be compiled.
+ * Currently only Component is supported, but this prepares for future support
+ * of Directive, Pipe, Injectable, NgModule, etc.
+ */
+export type AngularDecoratorType = 'Component' | 'Directive' | 'Pipe' | 'Injectable' | 'NgModule';
+
+/**
  * Result of compiling a component.
  */
 export interface CompilationResult {
@@ -19,10 +26,12 @@ export interface CompilationResult {
   sourceMap: SourceMap | null;
   /** Source map as inline comment string */
   sourceMapComment: string;
-  /** Any compilation errors */
+  /** Any compilation errors (aggregated from all decorators) */
   errors: string[];
-  /** HMR update module code (when enableHmr is true) */
-  hmrUpdateCode?: string;
+  /** HMR update module code per component class (when enableHmr is true) */
+  hmrUpdateCode?: Record<string, string>;
+  /** Names of all classes that were compiled */
+  compiledClasses?: string[];
 }
 
 /**

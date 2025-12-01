@@ -11,7 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as prettier from 'prettier';
 
-import {compileComponent} from '../index';
+import {compileAngularDecorators} from '../index';
 
 // ANSI color codes for terminal output
 const colors = {
@@ -110,7 +110,7 @@ async function testComponent(componentPath: string, name: string): Promise<boole
   console.log(`${colors.cyan}=== Testing ${name} ===${colors.reset}\n`);
 
   // Compile with our AOT compiler
-  const aotResult = compileComponent(componentPath, {enableHmr: true});
+  const aotResult = compileAngularDecorators(componentPath, {enableHmr: true});
 
   if (aotResult.errors.length > 0) {
     // tslint:disable-next-line:no-console
@@ -146,12 +146,15 @@ async function testComponent(componentPath: string, name: string): Promise<boole
     console.log(formattedAot);
   }
 
-  // Compare HMR update code
+  // Compare HMR update code (now a map of class name to code)
   if (aotResult.hmrUpdateCode) {
-    if (expectedHmr) {
+    const classNames = Object.keys(aotResult.hmrUpdateCode);
+    // For single-component files, compare against the expected HMR file
+    // For multi-component files, just display the HMR code for each component
+    if (classNames.length === 1 && expectedHmr) {
       const [formattedExpected, formattedActual] = await Promise.all([
         formatCode(expectedHmr),
-        formatCode(aotResult.hmrUpdateCode),
+        formatCode(aotResult.hmrUpdateCode[classNames[0]]),
       ]);
       const matches = showDiff(formattedExpected, formattedActual, `${name} - HMR Update`);
       allMatched = allMatched && matches;
@@ -160,11 +163,13 @@ async function testComponent(componentPath: string, name: string): Promise<boole
       console.log(`${colors.yellow}No expected HMR output file found.${colors.reset}`);
       // tslint:disable-next-line:no-console
       console.log(`${colors.dim}Create: ${expectedHmrPath}${colors.reset}\n`);
-      // tslint:disable-next-line:no-console
-      console.log(`${colors.cyan}HMR Update Code:${colors.reset}\n`);
-      const formattedHmr = await formatCode(aotResult.hmrUpdateCode);
-      // tslint:disable-next-line:no-console
-      console.log(formattedHmr);
+      for (const className of classNames) {
+        // tslint:disable-next-line:no-console
+        console.log(`${colors.cyan}HMR Update Code (${className}):${colors.reset}\n`);
+        const formattedHmr = await formatCode(aotResult.hmrUpdateCode[className]);
+        // tslint:disable-next-line:no-console
+        console.log(formattedHmr);
+      }
     }
   }
 
@@ -189,6 +194,13 @@ async function main(): Promise<void> {
     'External Template Component',
   );
   allPassed = allPassed && externalResult;
+
+  // Test multi-component file (multiple components in one file)
+  const multiResult = await testComponent(
+    path.join(testDir, 'multi-component.ts'),
+    'Multi-Component File',
+  );
+  allPassed = allPassed && multiResult;
 
   if (!allPassed) {
     process.exit(1);

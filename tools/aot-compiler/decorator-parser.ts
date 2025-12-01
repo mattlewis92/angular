@@ -14,31 +14,31 @@ import * as t from '@babel/types';
 import {ExtractedComponentMetadata, InputMetadata} from './types';
 
 /**
- * Parses the @Component decorator from a pre-parsed Babel AST and extracts metadata.
+ * Parses all @Component decorators from a pre-parsed Babel AST and extracts metadata.
  *
  * @param ast The Babel AST (from @babel/parser)
  * @param sourceCode The original source code (for extracting class body text)
- * @returns The extracted component metadata, or null if no @Component decorator found
+ * @returns Array of extracted component metadata for all @Component decorators found
  */
-export function parseComponentDecorator(
+export function parseComponentDecorators(
   ast: ParseResult<t.File>,
   sourceCode: string,
-): ExtractedComponentMetadata | null {
-  let result: ExtractedComponentMetadata | null = null;
+): ExtractedComponentMetadata[] {
+  const results: ExtractedComponentMetadata[] = [];
 
-  // Walk the AST to find a class with @Component decorator
+  // Walk the AST to find all classes with @Component decorator
   traverse(ast, {
     ClassDeclaration(path: NodePath<t.ClassDeclaration>) {
       if (!path.node.id) return;
 
       const componentDecorator = findComponentDecorator(path.node);
       if (componentDecorator) {
-        result = extractMetadata(path.node.id.name, componentDecorator, path.node, sourceCode);
+        results.push(extractMetadata(path.node.id.name, componentDecorator, path.node, sourceCode));
       }
     },
   });
 
-  return result;
+  return results;
 }
 
 /**
