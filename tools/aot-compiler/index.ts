@@ -196,11 +196,24 @@ function transformAndEmitWithBabel(
     classMetadataStmt = buildSetClassMetadataIIFE(className, decoratorArgsNode, translator);
   }
 
+  // Collect all named imports for HMR localDependencies
+  // These are passed to ɵɵreplaceMetadata so the HMR update function can access them
+  const namedImports: string[] = [];
+  for (const node of ast.program.body) {
+    if (t.isImportDeclaration(node)) {
+      for (const specifier of node.specifiers) {
+        if (t.isImportSpecifier(specifier) && t.isIdentifier(specifier.local)) {
+          namedImports.push(specifier.local.name);
+        }
+      }
+    }
+  }
+
   // Generate HMR initializer if enabled
   let hmrInitializerStmt: t.Statement | null = null;
   let hmrUpdateCode: string | undefined;
   if (enableHmr) {
-    const hmrMeta = buildHmrMetadata(className, filePath, translator);
+    const hmrMeta = buildHmrMetadata(className, filePath, translator, namedImports);
     const hmrInitExpr = compileHmrInitializer(hmrMeta);
     const translatedHmrInit = translator.translateExpression(hmrInitExpr);
     hmrInitializerStmt = t.expressionStatement(translatedHmrInit);
@@ -427,6 +440,7 @@ function buildHmrMetadata(
   className: string,
   filePath: string,
   translator: BabelBackedTranslator,
+  angularNamedImports: string[],
 ): R3HmrMetadata {
   // Get namespace dependencies from translator's imports
   const imports = translator.getImports();
@@ -437,12 +451,19 @@ function buildHmrMetadata(
       assignedName: imp.localName,
     }));
 
+  // Convert named imports to local dependencies
+  // Each dependency needs a name and a runtime representation (the expression to use at runtime)
+  const localDependencies = angularNamedImports.map((name) => ({
+    name,
+    runtimeRepresentation: new o.ReadVarExpr(name),
+  }));
+
   return {
     type: new o.ReadVarExpr(className),
     className,
     filePath,
     namespaceDependencies,
-    localDependencies: [], // Standalone compiler doesn't have local deps
+    localDependencies,
   };
 }
 
