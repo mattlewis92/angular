@@ -29,8 +29,8 @@ export interface CompilationResult {
   sourceMap: SourceMap | null;
   /** Source map as inline comment string */
   sourceMapComment: string;
-  /** Names of all classes that were compiled */
-  compiledClasses?: string[];
+  /** Names of component classes that were compiled (used for HMR) */
+  compiledComponentClasses?: string[];
 }
 
 /**
@@ -50,46 +50,27 @@ export interface CompileComponentOptions {
 }
 
 /**
- * Metadata extracted from the @Component decorator.
+ * Base metadata extracted from @Directive decorator.
+ * This interface contains all fields shared between directives and components.
+ * Components extend this with template-specific fields.
  */
-export interface ExtractedComponentMetadata {
-  /** The class name of the component */
+export interface ExtractedDirectiveMetadata {
+  /** The class name of the directive/component */
   className: string;
-  /** The CSS selector for the component */
+  /** The CSS selector for the directive/component */
   selector: string | null;
-  /** Inline template content */
-  template: string | null;
-  /** Path to external template file */
-  templateUrl: string | null;
-  /** Inline styles array */
-  styles: string[];
-  /** Paths to external style files */
-  styleUrls: string[];
-  /** View encapsulation strategy */
-  encapsulation: ViewEncapsulation | null;
-  /** Change detection strategy */
-  changeDetection: ChangeDetectionStrategy | null;
-  /** Whether the component is standalone (defaults to true in modern Angular) */
+  /** Whether the directive/component is standalone (defaults to true in modern Angular) */
   standalone: boolean;
-  /** Whether to preserve whitespace in templates */
-  preserveWhitespaces: boolean;
-  /** Custom interpolation markers [start, end] */
-  interpolation: [string, string] | null;
   /** Host bindings separated by type */
   hostBindings: ParsedHostBindings;
-  /** Component inputs (from decorator and class properties) */
+  /** Directive/component inputs (from decorator and class properties) */
   inputs: Record<string, InputMetadata>;
-  /** Component outputs */
+  /** Directive/component outputs */
   outputs: Record<string, string>;
-  /** Imported dependencies from @Component.imports */
-  imports: ImportMetadata[];
   /** The class body source code (without decorator) */
   classBody: string;
   /** The decorator arguments Babel AST node (for setClassMetadata) */
   decoratorArgsNode: t.ObjectExpression | null;
-
-  // New fields for complete metadata extraction
-
   /** Number of generic type parameters on the class */
   typeArgumentCount: number;
   /** Location of the class identifier for source span */
@@ -104,19 +85,44 @@ export interface ExtractedComponentMetadata {
   usesOnChanges: boolean;
   /** Whether the class extends another class */
   usesInheritance: boolean;
-  /** Whether the component uses signals (signals: true in decorator) */
+  /** Whether the directive/component uses signals (signals: true in decorator) */
   isSignal: boolean;
   /** Providers array expression */
   providers: t.Expression | null;
-  /** View providers array expression */
-  viewProviders: t.Expression | null;
-  /** Animations array expression */
-  animations: t.Expression | null;
   /** Host directives metadata */
   hostDirectives: HostDirectiveMetadata[] | null;
 
   /** @deprecated Use hostBindings instead */
   host: Record<string, string>;
+}
+
+/**
+ * Metadata extracted from the @Component decorator.
+ * Extends ExtractedDirectiveMetadata with template-specific fields.
+ */
+export interface ExtractedComponentMetadata extends ExtractedDirectiveMetadata {
+  /** Inline template content */
+  template: string | null;
+  /** Path to external template file */
+  templateUrl: string | null;
+  /** Inline styles array */
+  styles: string[];
+  /** Paths to external style files */
+  styleUrls: string[];
+  /** View encapsulation strategy */
+  encapsulation: ViewEncapsulation | null;
+  /** Change detection strategy */
+  changeDetection: ChangeDetectionStrategy | null;
+  /** Whether to preserve whitespace in templates */
+  preserveWhitespaces: boolean;
+  /** Custom interpolation markers [start, end] */
+  interpolation: [string, string] | null;
+  /** Imported dependencies from @Component.imports */
+  imports: ImportMetadata[];
+  /** View providers array expression */
+  viewProviders: t.Expression | null;
+  /** Animations array expression */
+  animations: t.Expression | null;
 }
 
 /**

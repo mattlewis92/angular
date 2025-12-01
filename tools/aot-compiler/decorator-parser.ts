@@ -13,6 +13,7 @@ import * as t from '@babel/types';
 
 import {
   ExtractedComponentMetadata,
+  ExtractedDirectiveMetadata,
   HostDirectiveMetadata,
   ImportMetadata,
   InputMetadata,
@@ -52,6 +53,173 @@ export function parseComponentDecorators(
   });
 
   return results;
+}
+
+/**
+ * Parses all @Directive decorators from a pre-parsed Babel AST and extracts metadata.
+ *
+ * @param ast The Babel AST (from @babel/parser)
+ * @param sourceCode The original source code (for extracting class body text)
+ * @returns Array of extracted directive metadata for all @Directive decorators found
+ */
+export function parseDirectiveDecorators(
+  ast: ParseResult<t.File>,
+  sourceCode: string,
+): ExtractedDirectiveMetadata[] {
+  const results: ExtractedDirectiveMetadata[] = [];
+
+  // Build a map of imported identifiers to their module paths
+  const importMap = buildImportMap(ast);
+
+  // Walk the AST to find all classes with @Directive decorator
+  traverse(ast, {
+    ClassDeclaration(path: NodePath<t.ClassDeclaration>) {
+      if (!path.node.id) return;
+
+      const directiveDecorator = findDirectiveDecorator(path.node);
+      if (directiveDecorator) {
+        results.push(
+          extractDirectiveMetadata(
+            path.node.id.name,
+            directiveDecorator,
+            path.node,
+            sourceCode,
+            importMap,
+          ),
+        );
+      }
+    },
+  });
+
+  return results;
+}
+
+/**
+ * Finds the @Directive decorator on a class declaration.
+ */
+function findDirectiveDecorator(node: t.ClassDeclaration): t.CallExpression | null {
+  const decorators = node.decorators;
+  if (!decorators) return null;
+
+  for (const decorator of decorators) {
+    if (t.isCallExpression(decorator.expression)) {
+      const callExpr = decorator.expression;
+      // Check for direct @Directive call
+      if (t.isIdentifier(callExpr.callee) && callExpr.callee.name === 'Directive') {
+        return callExpr;
+      }
+      // Check for namespaced @angular/core.Directive or ng.Directive
+      if (t.isMemberExpression(callExpr.callee) && t.isIdentifier(callExpr.callee.property)) {
+        if (callExpr.callee.property.name === 'Directive') {
+          return callExpr;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Extracts metadata from the @Directive decorator call expression.
+ */
+function extractDirectiveMetadata(
+  className: string,
+  decorator: t.CallExpression,
+  classDecl: t.ClassDeclaration,
+  sourceCode: string,
+  importMap: Map<string, string>,
+): ExtractedDirectiveMetadata {
+  // Extract class body - get the content between the class braces
+  const classBody = extractClassBody(classDecl, sourceCode);
+
+  // Extract class-level metadata
+  const typeArgumentCount = getTypeArgumentCount(classDecl);
+  const classLocation = getClassLocation(classDecl);
+  const usesOnChanges = detectUsesOnChanges(classDecl);
+  const usesInheritance = detectUsesInheritance(classDecl);
+  const {queries, viewQueries} = extractQueries(classDecl);
+  const signalInputs = extractSignalInputs(classDecl);
+
+  const metadata: ExtractedDirectiveMetadata = {
+    className,
+    selector: null,
+    standalone: true, // Default in modern Angular
+    hostBindings: {listeners: {}, properties: {}, attributes: {}, specialAttributes: {}},
+    host: {}, // Deprecated, kept for compatibility
+    inputs: {...signalInputs}, // Start with signal inputs, decorator inputs will be merged
+    outputs: {},
+    classBody,
+    decoratorArgsNode: null,
+    typeArgumentCount,
+    classLocation,
+    viewQueries,
+    queries,
+    exportAs: null,
+    usesOnChanges,
+    usesInheritance,
+    isSignal: false,
+    providers: null,
+    hostDirectives: null,
+  };
+
+  if (decorator.arguments.length === 0) return metadata;
+
+  const arg = decorator.arguments[0];
+  if (!t.isObjectExpression(arg)) return metadata;
+
+  // Store the decorator arguments node for setClassMetadata generation
+  metadata.decoratorArgsNode = arg;
+
+  for (const prop of arg.properties) {
+    if (t.isObjectProperty(prop) && t.isIdentifier(prop.key)) {
+      const name = prop.key.name;
+      const value = prop.value;
+
+      switch (name) {
+        case 'selector':
+          metadata.selector = extractStringValue(value);
+          break;
+        case 'standalone':
+          metadata.standalone = extractBooleanValue(value) ?? true;
+          break;
+        case 'host': {
+          const parsed = extractParsedHostBindings(value);
+          metadata.hostBindings = parsed;
+          metadata.host = extractHostBindings(value); // Keep deprecated field populated
+          break;
+        }
+        case 'inputs': {
+          // Merge with signal inputs (signal inputs take precedence if same name)
+          const decoratorInputs = extractInputs(value);
+          metadata.inputs = {...decoratorInputs, ...metadata.inputs};
+          break;
+        }
+        case 'outputs':
+          metadata.outputs = extractOutputs(value);
+          break;
+        case 'exportAs': {
+          const exportAsStr = extractStringValue(value);
+          if (exportAsStr) {
+            metadata.exportAs = exportAsStr.split(',').map((s) => s.trim());
+          }
+          break;
+        }
+        case 'providers':
+          if (t.isExpression(value)) {
+            metadata.providers = value;
+          }
+          break;
+        case 'hostDirectives':
+          metadata.hostDirectives = extractHostDirectives(value, importMap);
+          break;
+        case 'signals':
+          metadata.isSignal = extractBooleanValue(value) ?? false;
+          break;
+      }
+    }
+  }
+
+  return metadata;
 }
 
 /**

@@ -150,8 +150,8 @@ async function testComponent(componentPath: string, name: string): Promise<boole
     console.log(formattedAot);
   }
 
-  // Generate and compare HMR update code for each compiled class
-  const classNames = aotResult.compiledClasses ?? [];
+  // Generate and compare HMR update code for each compiled component class
+  const classNames = aotResult.compiledComponentClasses ?? [];
   if (classNames.length > 0) {
     // For single-component files, compare against the expected HMR file
     if (classNames.length === 1 && expectedHmr) {
@@ -225,6 +225,13 @@ async function main(): Promise<void> {
     'Full Metadata Component',
   );
   allPassed = allPassed && fullMetaResult;
+
+  // Test full metadata directive (comprehensive directive metadata extraction)
+  const fullDirResult = await testComponent(
+    path.join(testDir, 'full-metadata.directive.ts'),
+    'Full Metadata Directive',
+  );
+  allPassed = allPassed && fullDirResult;
 
   if (!allPassed) {
     process.exit(1);

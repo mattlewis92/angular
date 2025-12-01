@@ -21,6 +21,7 @@ import {
   ParseSourceSpan,
   parseTemplate,
   R3ComponentMetadata,
+  R3DirectiveMetadata,
   R3HostMetadata,
   R3InputMetadata,
   R3Reference,
@@ -43,6 +44,7 @@ import * as path from 'path';
 
 import {
   ExtractedComponentMetadata,
+  ExtractedDirectiveMetadata,
   HostDirectiveMetadata,
   ImportMetadata,
   InputMetadata,
@@ -59,6 +61,80 @@ export interface BuildMetadataResult {
   metadata: R3ComponentMetadata<R3TemplateDependency>;
   /** Names of imports that are deferred and should be removed from static imports */
   deferredImportNames: Set<string>;
+}
+
+/**
+ * Builds the R3DirectiveMetadata structure from extracted decorator metadata.
+ *
+ * @param extracted The metadata extracted from the @Directive decorator
+ * @param sourceFilePath The path to the source file (for source maps)
+ * @returns The R3DirectiveMetadata ready for compilation
+ */
+export function buildR3DirectiveMetadata(
+  extracted: ExtractedDirectiveMetadata,
+  sourceFilePath: string,
+): R3DirectiveMetadata {
+  // Create source span for type metadata using actual class location
+  const typeSourceSpan = buildTypeSourceSpan(extracted, sourceFilePath);
+
+  // Build the R3Reference for the directive type
+  const type: R3Reference = {
+    value: new ReadVarExpr(extracted.className),
+    type: new ReadVarExpr(extracted.className),
+  };
+
+  // Build host metadata from parsed host bindings
+  const host = buildHostMetadata(extracted.hostBindings);
+
+  // Build inputs metadata
+  const inputs = buildInputsMetadata(extracted.inputs);
+
+  return {
+    name: extracted.className,
+    type,
+    typeArgumentCount: extracted.typeArgumentCount,
+    typeSourceSpan,
+    deps: null, // Constructor dependencies - not needed for basic compilation
+    selector: extracted.selector,
+    queries: buildQueriesMetadata(extracted.queries),
+    viewQueries: buildQueriesMetadata(extracted.viewQueries),
+    host,
+    lifecycle: {usesOnChanges: extracted.usesOnChanges},
+    inputs,
+    outputs: extracted.outputs,
+    usesInheritance: extracted.usesInheritance,
+    fullInheritance: false,
+    exportAs: extracted.exportAs,
+    providers: extracted.providers ? new o.WrappedNodeExpr(extracted.providers) : null,
+    isStandalone: extracted.standalone,
+    isSignal: extracted.isSignal,
+    hostDirectives: buildHostDirectivesMetadata(extracted.hostDirectives),
+  };
+}
+
+/**
+ * Builds a ParseSourceSpan for the type metadata.
+ */
+function buildTypeSourceSpan(
+  extracted: ExtractedDirectiveMetadata,
+  sourceFilePath: string,
+): ParseSourceSpan {
+  if (extracted.classLocation) {
+    const sourceFile = new ParseSourceFile('', sourceFilePath);
+    const startLoc = new ParseLocation(
+      sourceFile,
+      0, // offset - not critical for most use cases
+      extracted.classLocation.line,
+      extracted.classLocation.column,
+    );
+    return new ParseSourceSpan(startLoc, startLoc);
+  }
+  // Fallback to empty span
+  const sourceFile = new ParseSourceFile('', sourceFilePath);
+  return new ParseSourceSpan(
+    new ParseLocation(sourceFile, 0, 0, 0),
+    new ParseLocation(sourceFile, 0, 0, 0),
+  );
 }
 
 /**
