@@ -241,12 +241,6 @@ export function compileAngularDecorators(
   }
 
   for (const extracted of extractedDirectives) {
-    // Validate required metadata - directives can have null selectors for abstract directives
-    // but we require them for compilation
-    if (!extracted.selector) {
-      throw new Error(`${extracted.className}: Directive must have a selector`);
-    }
-
     compiledDirectives.push(compileSingleDirective(extracted, absolutePath, constantPool));
   }
 
