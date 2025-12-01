@@ -49,25 +49,40 @@ export {
 } from './types';
 
 /**
- * Internal structure to hold compiled component data before AST transformation.
+ * Supported Angular decorator types for compilation.
  */
-interface CompiledComponentData {
+type DecoratorType = 'Component' | 'Directive' | 'Pipe' | 'Injectable' | 'NgModule';
+
+/**
+ * Internal structure to hold compiled class data before AST transformation.
+ * Works for all decorator types (Component, Directive, Pipe, Injectable, NgModule).
+ */
+interface CompiledClassData {
   className: string;
-  componentExpr: import('@angular/compiler').Expression;
-  resources: ResolvedResources;
+  /** The decorator type that was compiled */
+  decoratorType: DecoratorType;
+  /** The compiled definition expression (ɵcmp, ɵdir, ɵpipe, ɵprov, ɵmod) */
+  definitionExpr: import('@angular/compiler').Expression;
+  /** The static property name for the definition (ɵcmp, ɵdir, ɵpipe, ɵprov, ɵmod) */
+  definitionName: string;
+  /** The decorator arguments node for setClassMetadata */
   decoratorArgsNode: t.ObjectExpression | null;
-  /** Names of imports that are deferred and should be removed from static imports */
+  /** Names of imports that are deferred (only for components) */
   deferredImportNames: Set<string>;
+  /** Resolved template/styles (only for components) */
+  resources?: ResolvedResources;
 }
 
 /**
- * Internal structure to hold compiled directive data before AST transformation.
+ * Maps decorator types to their definition property names.
  */
-interface CompiledDirectiveData {
-  className: string;
-  directiveExpr: import('@angular/compiler').Expression;
-  decoratorArgsNode: t.ObjectExpression | null;
-}
+const DEFINITION_NAMES: Record<DecoratorType, string> = {
+  Component: 'ɵcmp',
+  Directive: 'ɵdir',
+  Pipe: 'ɵpipe',
+  Injectable: 'ɵprov',
+  NgModule: 'ɵmod',
+};
 
 /** Babel parser options for TypeScript with decorators */
 const BABEL_PARSER_OPTIONS = {
@@ -115,7 +130,7 @@ function compileSingleComponent(
   readFile: (path: string) => string,
   constantPool: ConstantPool,
   enableHmr: boolean,
-): CompiledComponentData {
+): CompiledClassData {
   const resources = resolveTemplateAndStyles(extracted, absolutePath, readFile);
   const {metadata, deferredImportNames} = buildR3ComponentMetadata(
     extracted,
@@ -129,10 +144,12 @@ function compileSingleComponent(
 
   return {
     className: extracted.className,
-    componentExpr: compiledComponent.expression,
-    resources,
+    decoratorType: 'Component',
+    definitionExpr: compiledComponent.expression,
+    definitionName: DEFINITION_NAMES.Component,
     decoratorArgsNode: extracted.decoratorArgsNode,
     deferredImportNames,
+    resources,
   };
 }
 
@@ -143,15 +160,18 @@ function compileSingleDirective(
   extracted: ExtractedDirectiveMetadata,
   absolutePath: string,
   constantPool: ConstantPool,
-): CompiledDirectiveData {
+): CompiledClassData {
   const metadata = buildR3DirectiveMetadata(extracted, absolutePath);
   const bindingParser = makeBindingParser();
   const compiledDirective = compileDirectiveFromMetadata(metadata, constantPool, bindingParser);
 
   return {
     className: extracted.className,
-    directiveExpr: compiledDirective.expression,
+    decoratorType: 'Directive',
+    definitionExpr: compiledDirective.expression,
+    definitionName: DEFINITION_NAMES.Directive,
     decoratorArgsNode: extracted.decoratorArgsNode,
+    deferredImportNames: new Set(),
   };
 }
 
@@ -216,28 +236,26 @@ export function compileAngularDecorators(
   // 1. Parse the source file
   const {ast, sourceCode, absolutePath} = parseFile(filePath, readFile);
 
-  // 2. Extract @Component and @Directive decorator metadata from the AST
+  // 2. Extract decorator metadata from the AST
   const extractedComponents = parseComponentDecorators(ast, sourceCode);
   const extractedDirectives = parseDirectiveDecorators(ast, sourceCode);
 
-  // 3. Compile each component and directive
-  const compiledComponents: CompiledComponentData[] = [];
-  const compiledDirectives: CompiledDirectiveData[] = [];
+  // 3. Compile all decorated classes
+  const compiledClasses: CompiledClassData[] = [];
   const constantPool = new ConstantPool();
 
   for (const extracted of extractedComponents) {
-    // Validate required metadata
+    // Validate required metadata - components must have selectors
     if (!extracted.selector) {
       throw new Error(`${extracted.className}: Component must have a selector`);
     }
-
-    compiledComponents.push(
+    compiledClasses.push(
       compileSingleComponent(extracted, absolutePath, readFile, constantPool, enableHmr),
     );
   }
 
   for (const extracted of extractedDirectives) {
-    compiledDirectives.push(compileSingleDirective(extracted, absolutePath, constantPool));
+    compiledClasses.push(compileSingleDirective(extracted, absolutePath, constantPool));
   }
 
   // 4. Transform AST and emit JavaScript with source maps
@@ -245,8 +263,7 @@ export function compileAngularDecorators(
     ast,
     sourceCode,
     absolutePath,
-    compiledComponents,
-    compiledDirectives,
+    compiledClasses,
     constantPool,
     generateSourceMap,
     enableHmr,
@@ -254,7 +271,9 @@ export function compileAngularDecorators(
   );
 
   // Only include component classes for HMR (directives don't need HMR)
-  result.compiledComponentClasses = compiledComponents.map((c) => c.className);
+  result.compiledComponentClasses = compiledClasses
+    .filter((c) => c.decoratorType === 'Component')
+    .map((c) => c.className);
 
   return result;
 }
@@ -309,14 +328,14 @@ export function compileHmrUpdateCode(
   for (const stmt of constantPool.statements) {
     translator.translateStatement(stmt);
   }
-  translator.translateExpression(compiled.componentExpr);
+  translator.translateExpression(compiled.definitionExpr);
 
   const hmrMeta = buildHmrMetadata(className, absolutePath, translator, namedImports);
 
   return generateHmrUpdateModule(
     className,
     constantPool,
-    compiled.componentExpr,
+    compiled.definitionExpr,
     hmrMeta,
     targetComponent.decoratorArgsNode,
     classLineNumber,
@@ -325,39 +344,30 @@ export function compileHmrUpdateCode(
 }
 
 /**
- * Internal structure to hold per-component transformation data.
+ * Internal structure to hold per-class transformation data.
+ * Works for all decorator types.
  */
-interface ComponentTransformData {
+interface ClassTransformData {
   className: string;
-  componentDefExpr: t.Expression;
+  decoratorType: DecoratorType;
+  definitionExpr: t.Expression;
+  definitionName: string;
   debugInfoStmt: t.Statement;
   classMetadataStmt: t.Statement | null;
   hmrInitializerStmt: t.Statement | null;
   classLineNumber: number;
-  resources: ResolvedResources;
-}
-
-/**
- * Internal structure to hold per-directive transformation data.
- */
-interface DirectiveTransformData {
-  className: string;
-  directiveDefExpr: t.Expression;
-  debugInfoStmt: t.Statement;
-  classMetadataStmt: t.Statement | null;
-  classLineNumber: number;
+  resources?: ResolvedResources;
 }
 
 /**
  * Uses Babel to transform the AST and emit JavaScript with source maps.
- * Handles multiple components and directives in a single file.
+ * Handles multiple decorated classes in a single file.
  */
 function transformAndEmitWithBabel(
   ast: ParseResult<t.File>,
   sourceCode: string,
   filePath: string,
-  compiledComponents: CompiledComponentData[],
-  compiledDirectives: CompiledDirectiveData[],
+  compiledClasses: CompiledClassData[],
   constantPool: ConstantPool,
   generateSourceMap: boolean,
   enableHmr: boolean,
@@ -398,68 +408,22 @@ function transformAndEmitWithBabel(
 
   // Collect all deferred imports that should be removed from static imports
   const allDeferredImports = new Set<string>();
-  for (const compiled of compiledComponents) {
+  for (const compiled of compiledClasses) {
     for (const name of compiled.deferredImportNames) {
       allDeferredImports.add(name);
     }
   }
 
-  // Process each component and build transformation data
-  const componentTransforms = new Map<string, ComponentTransformData>();
+  // Process each compiled class and build transformation data
+  const classTransforms = new Map<string, ClassTransformData>();
 
-  for (const compiled of compiledComponents) {
-    const {className, componentExpr, resources, decoratorArgsNode} = compiled;
+  for (const compiled of compiledClasses) {
+    const {className, decoratorType, definitionExpr, definitionName, decoratorArgsNode, resources} =
+      compiled;
     const classLineNumber = classLineNumbers.get(className) ?? 1;
 
-    // Translate the component definition expression
-    const componentDefExpr = translator.translateExpression(componentExpr);
-
-    // Generate debug info IIFE
-    const debugInfo: R3ClassDebugInfo = {
-      type: new o.ReadVarExpr(className),
-      className: o.literal(className),
-      filePath: o.literal(filePath),
-      lineNumber: o.literal(classLineNumber),
-      forbidOrphanRendering: false,
-    };
-    const debugInfoExpr = compileClassDebugInfo(debugInfo);
-    const debugInfoStmt = t.expressionStatement(translator.translateExpression(debugInfoExpr));
-
-    // Generate setClassMetadata IIFE if we have decorator args
-    let classMetadataStmt: t.Statement | null = null;
-    if (decoratorArgsNode) {
-      classMetadataStmt = buildSetClassMetadataIIFE(className, decoratorArgsNode, translator);
-    }
-
-    // Generate HMR initializer if enabled
-    let hmrInitializerStmt: t.Statement | null = null;
-    if (enableHmr) {
-      const hmrMeta = buildHmrMetadata(className, filePath, translator, namedImports);
-      const hmrInitExpr = compileHmrInitializer(hmrMeta);
-      const translatedHmrInit = translator.translateExpression(hmrInitExpr);
-      hmrInitializerStmt = t.expressionStatement(translatedHmrInit);
-    }
-
-    componentTransforms.set(className, {
-      className,
-      componentDefExpr,
-      debugInfoStmt,
-      classMetadataStmt,
-      hmrInitializerStmt,
-      classLineNumber,
-      resources,
-    });
-  }
-
-  // Process each directive and build transformation data
-  const directiveTransforms = new Map<string, DirectiveTransformData>();
-
-  for (const compiled of compiledDirectives) {
-    const {className, directiveExpr, decoratorArgsNode} = compiled;
-    const classLineNumber = classLineNumbers.get(className) ?? 1;
-
-    // Translate the directive definition expression
-    const directiveDefExpr = translator.translateExpression(directiveExpr);
+    // Translate the definition expression
+    const translatedDefExpr = translator.translateExpression(definitionExpr);
 
     // Generate debug info IIFE
     const debugInfo: R3ClassDebugInfo = {
@@ -479,16 +443,29 @@ function transformAndEmitWithBabel(
         className,
         decoratorArgsNode,
         translator,
-        'Directive',
+        decoratorType,
       );
     }
 
-    directiveTransforms.set(className, {
+    // Generate HMR initializer if enabled (only for components)
+    let hmrInitializerStmt: t.Statement | null = null;
+    if (enableHmr && decoratorType === 'Component') {
+      const hmrMeta = buildHmrMetadata(className, filePath, translator, namedImports);
+      const hmrInitExpr = compileHmrInitializer(hmrMeta);
+      const translatedHmrInit = translator.translateExpression(hmrInitExpr);
+      hmrInitializerStmt = t.expressionStatement(translatedHmrInit);
+    }
+
+    classTransforms.set(className, {
       className,
-      directiveDefExpr,
+      decoratorType,
+      definitionExpr: translatedDefExpr,
+      definitionName,
       debugInfoStmt,
       classMetadataStmt,
+      hmrInitializerStmt,
       classLineNumber,
+      resources,
     });
   }
 
@@ -519,30 +496,28 @@ function transformAndEmitWithBabel(
         }
       },
 
-      // Find and transform each component or directive class
+      // Find and transform each decorated class
       ClassDeclaration(path: NodePath<t.ClassDeclaration>) {
         const currentClassName = path.node.id?.name;
         if (!currentClassName) return;
 
-        const componentData = componentTransforms.get(currentClassName);
-        const directiveData = directiveTransforms.get(currentClassName);
+        const classData = classTransforms.get(currentClassName);
+        if (!classData) return;
 
-        if (!componentData && !directiveData) return;
-
-        // Remove @Component or @Directive decorator using path methods
+        // Remove the Angular decorator using path methods
         const decorators = path.get('decorators');
         if (Array.isArray(decorators)) {
           for (const decoratorPath of decorators) {
             const expr = decoratorPath.node.expression;
             if (t.isCallExpression(expr)) {
               const callee = expr.callee;
-              // Check for @Component()/@Directive() or @namespace.Component()/@namespace.Directive()
+              // Check for supported Angular decorators
+              const decoratorNames = ['Component', 'Directive', 'Pipe', 'Injectable', 'NgModule'];
               const isAngularDecorator =
-                (t.isIdentifier(callee) &&
-                  (callee.name === 'Component' || callee.name === 'Directive')) ||
+                (t.isIdentifier(callee) && decoratorNames.includes(callee.name)) ||
                 (t.isMemberExpression(callee) &&
                   t.isIdentifier(callee.property) &&
-                  (callee.property.name === 'Component' || callee.property.name === 'Directive'));
+                  decoratorNames.includes(callee.property.name));
               if (isAngularDecorator) {
                 decoratorPath.remove();
               }
@@ -577,29 +552,16 @@ function transformAndEmitWithBabel(
           ),
         ]);
 
-        // Create static block for ɵcmp or ɵdir
-        let defStaticBlock: t.StaticBlock;
-        if (componentData) {
-          defStaticBlock = t.staticBlock([
-            t.expressionStatement(
-              t.assignmentExpression(
-                '=',
-                t.memberExpression(t.thisExpression(), t.identifier('ɵcmp')),
-                componentData.componentDefExpr,
-              ),
+        // Create static block for the definition (ɵcmp, ɵdir, ɵpipe, ɵprov, ɵmod)
+        const defStaticBlock = t.staticBlock([
+          t.expressionStatement(
+            t.assignmentExpression(
+              '=',
+              t.memberExpression(t.thisExpression(), t.identifier(classData.definitionName)),
+              classData.definitionExpr,
             ),
-          ]);
-        } else {
-          defStaticBlock = t.staticBlock([
-            t.expressionStatement(
-              t.assignmentExpression(
-                '=',
-                t.memberExpression(t.thisExpression(), t.identifier('ɵdir')),
-                directiveData!.directiveDefExpr,
-              ),
-            ),
-          ]);
-        }
+          ),
+        ]);
 
         // Add the static blocks to the class body
         const classBody = path.get('body');
@@ -631,9 +593,9 @@ function transformAndEmitWithBabel(
             }
           }
 
-          // Add metadata and debug info for all components (in order they were compiled)
-          for (const compiled of compiledComponents) {
-            const transformData = componentTransforms.get(compiled.className);
+          // Add metadata and debug info for all compiled classes (in order they were compiled)
+          for (const compiled of compiledClasses) {
+            const transformData = classTransforms.get(compiled.className);
             if (!transformData) continue;
 
             // Add setClassMetadata IIFE
@@ -644,24 +606,10 @@ function transformAndEmitWithBabel(
             // Add debug info IIFE
             path.pushContainer('body', transformData.debugInfoStmt);
 
-            // Add HMR initializer
+            // Add HMR initializer (only for components)
             if (transformData.hmrInitializerStmt) {
               path.pushContainer('body', transformData.hmrInitializerStmt);
             }
-          }
-
-          // Add metadata and debug info for all directives (in order they were compiled)
-          for (const compiled of compiledDirectives) {
-            const transformData = directiveTransforms.get(compiled.className);
-            if (!transformData) continue;
-
-            // Add setClassMetadata IIFE
-            if (transformData.classMetadataStmt) {
-              path.pushContainer('body', transformData.classMetadataStmt);
-            }
-
-            // Add debug info IIFE
-            path.pushContainer('body', transformData.debugInfoStmt);
           }
         },
       },
@@ -694,10 +642,10 @@ function transformAndEmitWithBabel(
     const sourceContentMap = new Map<string, string | null>();
     sourceContentMap.set(filePath, sourceCode);
 
-    // Add all component template URLs
-    for (const compiled of compiledComponents) {
-      const transformData = componentTransforms.get(compiled.className);
-      if (transformData) {
+    // Add template URLs for components (only components have resources)
+    for (const compiled of compiledClasses) {
+      const transformData = classTransforms.get(compiled.className);
+      if (transformData?.resources) {
         sourceContentMap.set(transformData.resources.templateUrl, transformData.resources.template);
       }
     }
@@ -748,7 +696,7 @@ function buildSetClassMetadataIIFE(
   className: string,
   decoratorArgsNode: t.ObjectExpression,
   translator: BabelBackedTranslator,
-  decoratorType: 'Component' | 'Directive' = 'Component',
+  decoratorType: DecoratorType = 'Component',
 ): t.Statement {
   // Build the decorators metadata expression: [{type: Component/Directive, args: [...]}]
   // Use WrappedNodeExpr to wrap Babel AST nodes so the translator returns them directly
