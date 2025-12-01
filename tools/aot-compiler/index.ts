@@ -240,37 +240,46 @@ function transformAndEmitWithBabel(
         }
       }
 
-      // Create static ɵfac property
-      const factoryMethod = t.classProperty(
-        t.identifier('ɵfac'),
-        t.arrowFunctionExpression(
-          [t.assignmentPattern(t.identifier('__ngFactoryType__'), t.identifier('undefined'))],
-          t.newExpression(
-            t.logicalExpression('||', t.identifier('__ngFactoryType__'), t.identifier(className)),
-            [],
+      // Create static block for ɵfac with named function to match Angular compiler output
+      // static { this.ɵfac = function ClassName_Factory(__ngFactoryType__) { return new (...) }; }
+      const factoryFunction = t.functionExpression(
+        t.identifier(`${className}_Factory`),
+        [t.identifier('__ngFactoryType__')],
+        t.blockStatement([
+          t.returnStatement(
+            t.newExpression(
+              t.logicalExpression('||', t.identifier('__ngFactoryType__'), t.identifier(className)),
+              [],
+            ),
+          ),
+        ]),
+      );
+      const factoryStaticBlock = t.staticBlock([
+        t.expressionStatement(
+          t.assignmentExpression(
+            '=',
+            t.memberExpression(t.thisExpression(), t.identifier('ɵfac')),
+            factoryFunction,
           ),
         ),
-        undefined,
-        null,
-        false,
-        true, // static
-      );
+      ]);
 
-      // Create static ɵcmp property
-      // Note: @__PURE__ comment is already on the ɵɵdefineComponent call from the translator
-      const cmpProperty = t.classProperty(
-        t.identifier('ɵcmp'),
-        componentDefExpr,
-        undefined,
-        null,
-        false,
-        true, // static
-      );
+      // Create static block for ɵcmp
+      // static { this.ɵcmp = /*@__PURE__*/ i0.ɵɵdefineComponent({...}); }
+      const cmpStaticBlock = t.staticBlock([
+        t.expressionStatement(
+          t.assignmentExpression(
+            '=',
+            t.memberExpression(t.thisExpression(), t.identifier('ɵcmp')),
+            componentDefExpr,
+          ),
+        ),
+      ]);
 
-      // Add the static properties to the class body using pushContainer
+      // Add the static blocks to the class body using pushContainer
       const classBody = path.get('body');
-      classBody.pushContainer('body', factoryMethod);
-      classBody.pushContainer('body', cmpProperty);
+      classBody.pushContainer('body', factoryStaticBlock);
+      classBody.pushContainer('body', cmpStaticBlock);
     },
 
     // Add imports at the beginning, additional statements after existing imports
