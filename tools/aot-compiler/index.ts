@@ -220,10 +220,6 @@ export function compileAngularDecorators(
   const extractedComponents = parseComponentDecorators(ast, sourceCode);
   const extractedDirectives = parseDirectiveDecorators(ast, sourceCode);
 
-  if (extractedComponents.length === 0 && extractedDirectives.length === 0) {
-    throw new Error('No @Component or @Directive decorator found in file');
-  }
-
   // 3. Compile each component and directive
   const compiledComponents: CompiledComponentData[] = [];
   const compiledDirectives: CompiledDirectiveData[] = [];
