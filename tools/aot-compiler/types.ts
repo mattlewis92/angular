@@ -28,8 +28,6 @@ export interface CompilationResult {
   sourceMapComment: string;
   /** Any compilation errors (aggregated from all decorators) */
   errors: string[];
-  /** HMR update module code per component class (when enableHmr is true) */
-  hmrUpdateCode?: Record<string, string>;
   /** Names of all classes that were compiled */
   compiledClasses?: string[];
 }

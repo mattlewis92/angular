@@ -189,6 +189,109 @@ export function compileAngularDecorators(
 }
 
 /**
+ * Compiles the HMR update module code for a specific component in a file.
+ *
+ * This generates the code that will be hot-loaded when the component is updated.
+ * It should be called separately from `compileAngularDecorators` when HMR update
+ * code is needed for a specific component.
+ *
+ * @param filePath Absolute path to the TypeScript file
+ * @param className The name of the component class to generate HMR update code for
+ * @param options Compilation options
+ * @returns The HMR update module code, or null if the component was not found
+ */
+export function compileHmrUpdateCode(
+  filePath: string,
+  className: string,
+  options: CompileComponentOptions = {},
+): string | null {
+  const {readFile = defaultReadFile} = options;
+
+  try {
+    // 1. Resolve absolute path
+    const absolutePath = path.resolve(filePath);
+
+    // 2. Read the source file
+    const sourceCode = readFile(absolutePath);
+
+    // 3. Parse the source file with Babel
+    const ast = parse(sourceCode, {
+      ...BABEL_PARSER_OPTIONS,
+      sourceFilename: absolutePath,
+    });
+
+    // 4. Extract all component decorators and find the target
+    const extractedComponents = parseComponentDecorators(ast, sourceCode);
+    const targetComponent = extractedComponents.find((c) => c.className === className);
+
+    if (!targetComponent) {
+      return null;
+    }
+
+    // 5. Validate required metadata
+    if (!targetComponent.selector) {
+      return null;
+    }
+
+    // 6. Resolve external templates and styles
+    const resources = resolveTemplateAndStyles(targetComponent, absolutePath, readFile);
+
+    // 7. Build R3ComponentMetadata and compile
+    const metadata = buildR3ComponentMetadata(targetComponent, resources, absolutePath);
+    const constantPool = new ConstantPool();
+    const bindingParser = makeBindingParser(metadata.interpolation);
+    const compiledComponent = compileComponentFromMetadata(metadata, constantPool, bindingParser);
+
+    // 8. Find class line number
+    let classLineNumber = 1;
+    for (const node of ast.program.body) {
+      if (t.isExportNamedDeclaration(node) && t.isClassDeclaration(node.declaration)) {
+        if (node.declaration.id?.name === className && node.declaration.id.loc) {
+          classLineNumber = node.declaration.id.loc.start.line;
+          break;
+        }
+      } else if (t.isClassDeclaration(node) && node.id?.name === className && node.id.loc) {
+        classLineNumber = node.id.loc.start.line;
+        break;
+      }
+    }
+
+    // 9. Collect named imports for HMR localDependencies
+    const namedImports: string[] = [];
+    for (const node of ast.program.body) {
+      if (t.isImportDeclaration(node)) {
+        for (const specifier of node.specifiers) {
+          if (t.isImportSpecifier(specifier) && t.isIdentifier(specifier.local)) {
+            namedImports.push(specifier.local.name);
+          }
+        }
+      }
+    }
+
+    // 10. Build HMR metadata and generate update module
+    // First translate constant pool and component to register imports in the translator
+    const translator = new BabelBackedTranslator();
+    for (const stmt of constantPool.statements) {
+      translator.translateStatement(stmt);
+    }
+    translator.translateExpression(compiledComponent.expression);
+
+    const hmrMeta = buildHmrMetadata(className, absolutePath, translator, namedImports);
+
+    return generateHmrUpdateModule(
+      className,
+      constantPool,
+      compiledComponent.expression,
+      hmrMeta,
+      targetComponent.decoratorArgsNode,
+      classLineNumber,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Internal structure to hold per-component transformation data.
  */
 interface ComponentTransformData {
@@ -249,7 +352,6 @@ function transformAndEmitWithBabel(
 
   // Process each component and build transformation data
   const componentTransforms = new Map<string, ComponentTransformData>();
-  const hmrUpdateCodes: Record<string, string> = {};
 
   for (const compiled of compiledComponents) {
     const {className, componentExpr, resources, decoratorArgsNode} = compiled;
@@ -282,16 +384,6 @@ function transformAndEmitWithBabel(
       const hmrInitExpr = compileHmrInitializer(hmrMeta);
       const translatedHmrInit = translator.translateExpression(hmrInitExpr);
       hmrInitializerStmt = t.expressionStatement(translatedHmrInit);
-
-      // Generate HMR update module for this component
-      hmrUpdateCodes[className] = generateHmrUpdateModule(
-        className,
-        constantPool,
-        componentExpr,
-        hmrMeta,
-        decoratorArgsNode,
-        classLineNumber,
-      );
     }
 
     componentTransforms.set(className, {
@@ -488,8 +580,6 @@ function transformAndEmitWithBabel(
     sourceMap,
     sourceMapComment,
     errors: [],
-    // Map of class name to HMR update code
-    hmrUpdateCode: Object.keys(hmrUpdateCodes).length > 0 ? hmrUpdateCodes : undefined,
   };
 }
 

@@ -11,7 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as prettier from 'prettier';
 
-import {compileAngularDecorators} from '../index';
+import {compileAngularDecorators, compileHmrUpdateCode} from '../index';
 
 // ANSI color codes for terminal output
 const colors = {
@@ -146,29 +146,35 @@ async function testComponent(componentPath: string, name: string): Promise<boole
     console.log(formattedAot);
   }
 
-  // Compare HMR update code (now a map of class name to code)
-  if (aotResult.hmrUpdateCode) {
-    const classNames = Object.keys(aotResult.hmrUpdateCode);
+  // Generate and compare HMR update code for each compiled class
+  const classNames = aotResult.compiledClasses ?? [];
+  if (classNames.length > 0) {
     // For single-component files, compare against the expected HMR file
-    // For multi-component files, just display the HMR code for each component
     if (classNames.length === 1 && expectedHmr) {
-      const [formattedExpected, formattedActual] = await Promise.all([
-        formatCode(expectedHmr),
-        formatCode(aotResult.hmrUpdateCode[classNames[0]]),
-      ]);
-      const matches = showDiff(formattedExpected, formattedActual, `${name} - HMR Update`);
-      allMatched = allMatched && matches;
+      const hmrCode = compileHmrUpdateCode(componentPath, classNames[0]);
+      if (hmrCode) {
+        const [formattedExpected, formattedActual] = await Promise.all([
+          formatCode(expectedHmr),
+          formatCode(hmrCode),
+        ]);
+        const matches = showDiff(formattedExpected, formattedActual, `${name} - HMR Update`);
+        allMatched = allMatched && matches;
+      }
     } else {
+      // For multi-component files, just display the HMR code for each component
       // tslint:disable-next-line:no-console
       console.log(`${colors.yellow}No expected HMR output file found.${colors.reset}`);
       // tslint:disable-next-line:no-console
       console.log(`${colors.dim}Create: ${expectedHmrPath}${colors.reset}\n`);
       for (const className of classNames) {
-        // tslint:disable-next-line:no-console
-        console.log(`${colors.cyan}HMR Update Code (${className}):${colors.reset}\n`);
-        const formattedHmr = await formatCode(aotResult.hmrUpdateCode[className]);
-        // tslint:disable-next-line:no-console
-        console.log(formattedHmr);
+        const hmrCode = compileHmrUpdateCode(componentPath, className);
+        if (hmrCode) {
+          // tslint:disable-next-line:no-console
+          console.log(`${colors.cyan}HMR Update Code (${className}):${colors.reset}\n`);
+          const formattedHmr = await formatCode(hmrCode);
+          // tslint:disable-next-line:no-console
+          console.log(formattedHmr);
+        }
       }
     }
   }
