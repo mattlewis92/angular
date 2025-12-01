@@ -7,6 +7,8 @@
  */
 
 import {
+  AST,
+  BindingPipe,
   ChangeDetectionStrategy,
   DeclarationListEmitMode,
   DeferBlockDepsEmitMode,
@@ -23,10 +25,14 @@ import {
   R3Reference,
   R3TemplateDependency,
   ReadVarExpr,
+  RecursiveAstVisitor,
+  TmplAstBoundAttribute,
+  TmplAstBoundText,
   TmplAstDeferredBlock,
   TmplAstElement,
   TmplAstNode,
   TmplAstTemplate,
+  TmplAstTextAttribute,
   ViewEncapsulation,
 } from '@angular/compiler';
 import {parse} from '@babel/parser';
@@ -300,21 +306,22 @@ function buildDeferMetadata(
     };
   }
 
-  // Build a map of selectors to import metadata
+  // Build a map of import names to their Angular artifact metadata
   const componentDir = path.dirname(sourceFilePath);
-  const selectorToImport = buildSelectorMap(imports, componentDir, readFile);
+  const importArtifactMap = buildImportArtifactMap(imports, componentDir, readFile);
 
   // Build the blocks map with dependency expressions
   const blocks = new Map<TmplAstDeferredBlock, o.Expression | null>();
   const deferredImportNames = new Set<string>();
 
   for (const deferBlock of deferBlocks) {
-    const elements = collectElementsInDeferBlock(deferBlock);
+    // Collect all usages (elements, attributes, pipes) in the defer block
+    const usage = collectUsagesInDeferBlock(deferBlock);
     const deps: ImportMetadata[] = [];
 
-    for (const elementName of elements) {
-      const imp = selectorToImport.get(elementName);
-      if (imp) {
+    // Check each imported artifact to see if it's used in this defer block
+    for (const [importName, {import: imp, artifact}] of importArtifactMap.artifacts) {
+      if (doesArtifactMatchUsage(artifact, usage)) {
         deps.push(imp);
         deferredImportNames.add(imp.name);
       }
@@ -387,48 +394,231 @@ function visitNodes(nodes: TmplAstNode[], visitor: (node: TmplAstNode) => void):
 }
 
 /**
- * Collects all element tag names used inside a defer block's main content.
+ * The type of Angular artifact.
  */
-function collectElementsInDeferBlock(deferBlock: TmplAstDeferredBlock): Set<string> {
-  const elements = new Set<string>();
+type AngularArtifactKind = 'component' | 'directive' | 'pipe';
+
+/**
+ * Metadata extracted from an Angular artifact (component, directive, or pipe).
+ */
+interface AngularArtifactMetadata {
+  kind: AngularArtifactKind;
+  /** For components/directives: the selector string. For pipes: the pipe name. */
+  selector: string;
+  /** Parsed selectors for components/directives (element names, attribute names, class names) */
+  parsedSelectors?: ParsedSelector[];
+}
+
+/**
+ * A parsed CSS selector broken into its parts.
+ */
+interface ParsedSelector {
+  element: string | null;
+  attributes: string[];
+  classes: string[];
+}
+
+/**
+ * Usage info collected from a defer block.
+ */
+interface DeferBlockUsage {
+  /** Element tag names used (e.g., 'app-child', 'div') */
+  elements: Set<string>;
+  /** Attribute names used (e.g., 'myDirective', 'ngIf') */
+  attributes: Set<string>;
+  /** Pipe names used (e.g., 'async', 'date') */
+  pipes: Set<string>;
+}
+
+/**
+ * Collects all usages (elements, attributes, pipes) inside a defer block's main content.
+ */
+function collectUsagesInDeferBlock(deferBlock: TmplAstDeferredBlock): DeferBlockUsage {
+  const usage: DeferBlockUsage = {
+    elements: new Set<string>(),
+    attributes: new Set<string>(),
+    pipes: new Set<string>(),
+  };
 
   visitNodes(deferBlock.children, (node) => {
     if (node instanceof TmplAstElement) {
-      elements.add(node.name);
+      usage.elements.add(node.name);
+
+      // Collect text attributes (e.g., <div myDirective>)
+      for (const attr of node.attributes) {
+        usage.attributes.add(attr.name);
+      }
+
+      // Collect bound attributes and their pipe usages
+      for (const input of node.inputs) {
+        usage.attributes.add(input.name);
+        collectPipesFromExpression(input.value, usage.pipes);
+      }
+    }
+
+    // Collect pipes from bound text (interpolations)
+    if (node instanceof TmplAstBoundText) {
+      collectPipesFromExpression(node.value, usage.pipes);
     }
   });
 
-  return elements;
+  return usage;
 }
 
 /**
- * Builds a map from element selectors to their import metadata.
+ * Recursively collects pipe names from an AST expression.
  */
-function buildSelectorMap(
+function collectPipesFromExpression(ast: AST, pipes: Set<string>): void {
+  const visitor = new PipeCollectorVisitor(pipes);
+  ast.visit(visitor);
+}
+
+/**
+ * AST visitor that collects pipe names.
+ */
+class PipeCollectorVisitor extends RecursiveAstVisitor {
+  constructor(private pipes: Set<string>) {
+    super();
+  }
+
+  override visitPipe(ast: BindingPipe, context: any): any {
+    this.pipes.add(ast.name);
+    // Continue visiting to find nested pipes
+    return super.visitPipe(ast, context);
+  }
+}
+
+/**
+ * Maps import metadata to their Angular artifact metadata.
+ */
+interface ImportArtifactMap {
+  /** Map from import name to its artifact metadata */
+  artifacts: Map<string, {import: ImportMetadata; artifact: AngularArtifactMetadata}>;
+}
+
+/**
+ * Builds a map of import names to their Angular artifact metadata.
+ */
+function buildImportArtifactMap(
   imports: ImportMetadata[],
   componentDir: string,
   readFile: (path: string) => string,
-): Map<string, ImportMetadata> {
-  const selectorToImport = new Map<string, ImportMetadata>();
+): ImportArtifactMap {
+  const artifacts = new Map<string, {import: ImportMetadata; artifact: AngularArtifactMetadata}>();
 
   for (const imp of imports) {
-    const selector = getComponentSelector(imp.modulePath, componentDir, readFile);
-    if (selector) {
-      selectorToImport.set(selector, imp);
+    const artifact = getAngularArtifactMetadata(imp.modulePath, imp.name, componentDir, readFile);
+    if (artifact) {
+      artifacts.set(imp.name, {import: imp, artifact});
     }
   }
 
-  return selectorToImport;
+  return {artifacts};
 }
 
 /**
- * Extracts the component selector from an imported component file.
+ * Checks if a given usage matches an artifact's selector.
  */
-function getComponentSelector(
+function doesArtifactMatchUsage(
+  artifact: AngularArtifactMetadata,
+  usage: DeferBlockUsage,
+): boolean {
+  if (artifact.kind === 'pipe') {
+    // For pipes, check if the pipe name is used
+    return usage.pipes.has(artifact.selector);
+  }
+
+  // For components and directives, check parsed selectors
+  if (!artifact.parsedSelectors) {
+    return false;
+  }
+
+  for (const selector of artifact.parsedSelectors) {
+    // Check element selector
+    if (selector.element && usage.elements.has(selector.element)) {
+      return true;
+    }
+
+    // Check attribute selectors
+    for (const attr of selector.attributes) {
+      if (usage.attributes.has(attr)) {
+        return true;
+      }
+    }
+
+    // Check class selectors (rarely used but supported)
+    // Note: Class selectors in templates would be via [class.x] or class="x"
+    // This is a simplified check
+    for (const cls of selector.classes) {
+      if (usage.attributes.has(cls)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Parses an Angular selector string into its component parts.
+ * Handles comma-separated selectors (e.g., "app-foo, [appFoo]")
+ */
+function parseSelector(selectorStr: string): ParsedSelector[] {
+  const selectors: ParsedSelector[] = [];
+
+  // Split by comma for multiple selectors
+  const parts = selectorStr.split(',').map((s) => s.trim());
+
+  for (const part of parts) {
+    const parsed: ParsedSelector = {
+      element: null,
+      attributes: [],
+      classes: [],
+    };
+
+    // Simple regex-based parsing
+    let remaining = part;
+
+    // Extract element name (must be at the start, before any . or [)
+    const elementMatch = remaining.match(/^([a-zA-Z][a-zA-Z0-9-]*)/);
+    if (elementMatch) {
+      parsed.element = elementMatch[1];
+      remaining = remaining.slice(elementMatch[0].length);
+    }
+
+    // Extract attribute selectors [attr] or [attr=value]
+    const attrRegex = /\[([^\]=]+)(?:=[^\]]+)?\]/g;
+    let attrMatch;
+    while ((attrMatch = attrRegex.exec(part)) !== null) {
+      parsed.attributes.push(attrMatch[1]);
+    }
+
+    // Extract class selectors .className
+    const classRegex = /\.([a-zA-Z][a-zA-Z0-9-_]*)/g;
+    let classMatch;
+    while ((classMatch = classRegex.exec(part)) !== null) {
+      parsed.classes.push(classMatch[1]);
+    }
+
+    // Only add if we found something
+    if (parsed.element || parsed.attributes.length > 0 || parsed.classes.length > 0) {
+      selectors.push(parsed);
+    }
+  }
+
+  return selectors;
+}
+
+/**
+ * Extracts Angular artifact metadata from an imported file.
+ * Supports @Component, @Directive, and @Pipe decorators.
+ */
+function getAngularArtifactMetadata(
   modulePath: string,
+  importName: string,
   componentDir: string,
   readFile: (path: string) => string,
-): string | null {
+): AngularArtifactMetadata | null {
   try {
     // Resolve the import path relative to the component directory
     let resolvedPath = path.resolve(componentDir, modulePath);
@@ -444,19 +634,28 @@ function getComponentSelector(
       plugins: ['typescript', 'decorators-legacy', 'classProperties'],
     });
 
-    let selector: string | null = null;
+    let result: AngularArtifactMetadata | null = null;
 
-    // Find the @Component decorator and extract its selector
+    // Find the class with the matching name and its decorator
     traverse(ast, {
-      Decorator(decoratorPath) {
-        const expr = decoratorPath.node.expression;
-        if (
-          t.isCallExpression(expr) &&
-          t.isIdentifier(expr.callee) &&
-          expr.callee.name === 'Component'
-        ) {
+      ClassDeclaration(classPath) {
+        const className = classPath.node.id?.name;
+        if (className !== importName) return;
+
+        const decorators = classPath.node.decorators;
+        if (!decorators) return;
+
+        for (const decorator of decorators) {
+          const expr = decorator.expression;
+          if (!t.isCallExpression(expr) || !t.isIdentifier(expr.callee)) continue;
+
+          const decoratorName = expr.callee.name;
           const arg = expr.arguments[0];
-          if (t.isObjectExpression(arg)) {
+
+          if (!t.isObjectExpression(arg)) continue;
+
+          if (decoratorName === 'Component' || decoratorName === 'Directive') {
+            // Extract selector property
             for (const prop of arg.properties) {
               if (
                 t.isObjectProperty(prop) &&
@@ -464,7 +663,29 @@ function getComponentSelector(
                 prop.key.name === 'selector' &&
                 t.isStringLiteral(prop.value)
               ) {
-                selector = prop.value.value;
+                const selectorStr = prop.value.value;
+                result = {
+                  kind: decoratorName === 'Component' ? 'component' : 'directive',
+                  selector: selectorStr,
+                  parsedSelectors: parseSelector(selectorStr),
+                };
+                return;
+              }
+            }
+          } else if (decoratorName === 'Pipe') {
+            // Extract name property
+            for (const prop of arg.properties) {
+              if (
+                t.isObjectProperty(prop) &&
+                t.isIdentifier(prop.key) &&
+                prop.key.name === 'name' &&
+                t.isStringLiteral(prop.value)
+              ) {
+                result = {
+                  kind: 'pipe',
+                  selector: prop.value.value,
+                };
+                return;
               }
             }
           }
@@ -472,7 +693,7 @@ function getComponentSelector(
       },
     });
 
-    return selector;
+    return result;
   } catch {
     // If we can't read or parse the file, return null
     return null;
