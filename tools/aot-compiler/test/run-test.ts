@@ -212,6 +212,13 @@ async function main(): Promise<void> {
   );
   allPassed = allPassed && multiResult;
 
+  // Test defer block component
+  const deferResult = await testComponent(
+    path.join(testDir, 'defer.component.ts'),
+    'Defer Block Component',
+  );
+  allPassed = allPassed && deferResult;
+
   if (!allPassed) {
     process.exit(1);
   }

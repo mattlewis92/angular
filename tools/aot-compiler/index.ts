@@ -53,6 +53,8 @@ interface CompiledComponentData {
   componentExpr: import('@angular/compiler').Expression;
   resources: ResolvedResources;
   decoratorArgsNode: t.ObjectExpression | null;
+  /** Names of imports that are deferred and should be removed from static imports */
+  deferredImportNames: Set<string>;
 }
 
 /** Babel parser options for TypeScript with decorators */
@@ -100,9 +102,16 @@ function compileSingleComponent(
   absolutePath: string,
   readFile: (path: string) => string,
   constantPool: ConstantPool,
+  enableHmr: boolean,
 ): CompiledComponentData {
   const resources = resolveTemplateAndStyles(extracted, absolutePath, readFile);
-  const metadata = buildR3ComponentMetadata(extracted, resources, absolutePath);
+  const {metadata, deferredImportNames} = buildR3ComponentMetadata(
+    extracted,
+    resources,
+    absolutePath,
+    enableHmr,
+    readFile,
+  );
   const bindingParser = makeBindingParser(metadata.interpolation);
   const compiledComponent = compileComponentFromMetadata(metadata, constantPool, bindingParser);
 
@@ -111,6 +120,7 @@ function compileSingleComponent(
     componentExpr: compiledComponent.expression,
     resources,
     decoratorArgsNode: extracted.decoratorArgsNode,
+    deferredImportNames,
   };
 }
 
@@ -192,7 +202,7 @@ export function compileAngularDecorators(
     }
 
     compiledComponents.push(
-      compileSingleComponent(extracted, absolutePath, readFile, constantPool),
+      compileSingleComponent(extracted, absolutePath, readFile, constantPool, enableHmr),
     );
   }
 
@@ -243,9 +253,15 @@ export function compileHmrUpdateCode(
     throw new Error(`${className}: Component not found in file or has no selector`);
   }
 
-  // 3. Compile the component
+  // 3. Compile the component (HMR update code always has enableHmr=true)
   const constantPool = new ConstantPool();
-  const compiled = compileSingleComponent(targetComponent, absolutePath, readFile, constantPool);
+  const compiled = compileSingleComponent(
+    targetComponent,
+    absolutePath,
+    readFile,
+    constantPool,
+    true,
+  );
 
   // 4. Get class line number and named imports
   const classLineNumber = findClassLineNumber(ast, className);
@@ -332,6 +348,14 @@ function transformAndEmitWithBabel(
     }
   }
 
+  // Collect all deferred imports that should be removed from static imports
+  const allDeferredImports = new Set<string>();
+  for (const compiled of compiledComponents) {
+    for (const name of compiled.deferredImportNames) {
+      allDeferredImports.add(name);
+    }
+  }
+
   // Process each component and build transformation data
   const componentTransforms = new Map<string, ComponentTransformData>();
 
@@ -385,6 +409,27 @@ function transformAndEmitWithBabel(
   // Create the Angular component transform plugin
   const angularTransformPlugin = (): PluginObj => ({
     visitor: {
+      // Remove static imports for deferred dependencies
+      ImportDeclaration(path: NodePath<t.ImportDeclaration>) {
+        if (allDeferredImports.size === 0) return;
+
+        const specifiers = path.node.specifiers;
+        const remainingSpecifiers = specifiers.filter((spec) => {
+          if (t.isImportSpecifier(spec) && t.isIdentifier(spec.local)) {
+            return !allDeferredImports.has(spec.local.name);
+          }
+          return true;
+        });
+
+        if (remainingSpecifiers.length === 0) {
+          // All specifiers were deferred imports, remove the entire import declaration
+          path.remove();
+        } else if (remainingSpecifiers.length !== specifiers.length) {
+          // Some specifiers were removed, update the import declaration
+          path.node.specifiers = remainingSpecifiers;
+        }
+      },
+
       // Find and transform each component class
       ClassDeclaration(path: NodePath<t.ClassDeclaration>) {
         const currentClassName = path.node.id?.name;

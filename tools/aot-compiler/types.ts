@@ -81,6 +81,8 @@ export interface ExtractedComponentMetadata {
   inputs: Record<string, InputMetadata>;
   /** Component outputs */
   outputs: Record<string, string>;
+  /** Imported dependencies from @Component.imports */
+  imports: ImportMetadata[];
   /** The class body source code (without decorator) */
   classBody: string;
   /** The decorator arguments Babel AST node (for setClassMetadata) */
@@ -95,6 +97,16 @@ export interface InputMetadata {
   bindingPropertyName: string;
   /** Whether the input is required */
   required: boolean;
+}
+
+/**
+ * Metadata for an imported dependency in @Component.imports.
+ */
+export interface ImportMetadata {
+  /** The local identifier name (e.g., 'ChildComponent') */
+  name: string;
+  /** The module path from the import statement (e.g., './child.component') */
+  modulePath: string;
 }
 
 /**

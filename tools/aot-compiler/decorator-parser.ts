@@ -11,7 +11,7 @@ import type {ParseResult} from '@babel/parser';
 import traverse, {NodePath} from '@babel/traverse';
 import * as t from '@babel/types';
 
-import {ExtractedComponentMetadata, InputMetadata} from './types';
+import {ExtractedComponentMetadata, ImportMetadata, InputMetadata} from './types';
 
 /**
  * Parses all @Component decorators from a pre-parsed Babel AST and extracts metadata.
@@ -26,6 +26,10 @@ export function parseComponentDecorators(
 ): ExtractedComponentMetadata[] {
   const results: ExtractedComponentMetadata[] = [];
 
+  // Build a map of imported identifiers to their module paths
+  // This is used to resolve @Component.imports identifiers to their source modules
+  const importMap = buildImportMap(ast);
+
   // Walk the AST to find all classes with @Component decorator
   traverse(ast, {
     ClassDeclaration(path: NodePath<t.ClassDeclaration>) {
@@ -33,12 +37,39 @@ export function parseComponentDecorators(
 
       const componentDecorator = findComponentDecorator(path.node);
       if (componentDecorator) {
-        results.push(extractMetadata(path.node.id.name, componentDecorator, path.node, sourceCode));
+        results.push(
+          extractMetadata(path.node.id.name, componentDecorator, path.node, sourceCode, importMap),
+        );
       }
     },
   });
 
   return results;
+}
+
+/**
+ * Builds a map from imported identifier names to their module paths.
+ * For example: { 'ChildComponent': './child.component', 'CommonModule': '@angular/common' }
+ */
+function buildImportMap(ast: ParseResult<t.File>): Map<string, string> {
+  const importMap = new Map<string, string>();
+
+  for (const node of ast.program.body) {
+    if (t.isImportDeclaration(node)) {
+      const modulePath = node.source.value;
+      for (const specifier of node.specifiers) {
+        if (t.isImportSpecifier(specifier) && t.isIdentifier(specifier.local)) {
+          // Named import: import { Foo } from 'module'
+          importMap.set(specifier.local.name, modulePath);
+        } else if (t.isImportDefaultSpecifier(specifier)) {
+          // Default import: import Foo from 'module'
+          importMap.set(specifier.local.name, modulePath);
+        }
+      }
+    }
+  }
+
+  return importMap;
 }
 
 /**
@@ -74,6 +105,7 @@ function extractMetadata(
   decorator: t.CallExpression,
   classDecl: t.ClassDeclaration,
   sourceCode: string,
+  importMap: Map<string, string>,
 ): ExtractedComponentMetadata {
   // Extract class body - get the content between the class braces
   const classBody = extractClassBody(classDecl, sourceCode);
@@ -93,6 +125,7 @@ function extractMetadata(
     host: {},
     inputs: {},
     outputs: {},
+    imports: [],
     classBody,
     decoratorArgsNode: null,
   };
@@ -155,6 +188,9 @@ function extractMetadata(
           break;
         case 'outputs':
           metadata.outputs = extractOutputs(value);
+          break;
+        case 'imports':
+          metadata.imports = extractImports(value, importMap);
           break;
       }
     }
@@ -361,6 +397,31 @@ function extractOutputs(node: t.Node): Record<string, string> {
       }
     }
   }
+  return result;
+}
+
+/**
+ * Extracts imports from the @Component.imports array.
+ * Maps identifier names to their module paths using the import map.
+ */
+function extractImports(node: t.Node, importMap: Map<string, string>): ImportMetadata[] {
+  const result: ImportMetadata[] = [];
+
+  if (t.isArrayExpression(node)) {
+    for (const element of node.elements) {
+      if (!element) continue;
+
+      // Handle direct identifier reference: imports: [ChildComponent]
+      if (t.isIdentifier(element)) {
+        const name = element.name;
+        const modulePath = importMap.get(name);
+        if (modulePath) {
+          result.push({name, modulePath});
+        }
+      }
+    }
+  }
+
   return result;
 }
 
