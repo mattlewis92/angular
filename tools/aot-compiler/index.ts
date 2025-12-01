@@ -219,7 +219,14 @@ function transformAndEmitWithBabel(
     hmrInitializerStmt = t.expressionStatement(translatedHmrInit);
 
     // Generate HMR update module
-    hmrUpdateCode = generateHmrUpdateModule(className, constantPool, componentExpr, hmrMeta);
+    hmrUpdateCode = generateHmrUpdateModule(
+      className,
+      constantPool,
+      componentExpr,
+      hmrMeta,
+      decoratorArgsNode,
+      classLineNumber,
+    );
   }
 
   // Get the import declarations from the translator
@@ -440,20 +447,22 @@ function buildHmrMetadata(
   className: string,
   filePath: string,
   translator: BabelBackedTranslator,
-  angularNamedImports: string[],
+  namedImports: string[],
 ): R3HmrMetadata {
   // Get namespace dependencies from translator's imports
+  // Use ɵhmr0, ɵhmr1, etc. naming convention for HMR update code
   const imports = translator.getImports();
+  let hmrNamespaceIndex = 0;
   const namespaceDependencies = imports
     .filter((imp) => imp.symbolName === null)
     .map((imp) => ({
       moduleName: imp.moduleName,
-      assignedName: imp.localName,
+      assignedName: `ɵhmr${hmrNamespaceIndex++}`,
     }));
 
   // Convert named imports to local dependencies
   // Each dependency needs a name and a runtime representation (the expression to use at runtime)
-  const localDependencies = angularNamedImports.map((name) => ({
+  const localDependencies = namedImports.map((name) => ({
     name,
     runtimeRepresentation: new o.ReadVarExpr(name),
   }));
@@ -475,19 +484,68 @@ function generateHmrUpdateModule(
   constantPool: ConstantPool,
   componentExpr: import('@angular/compiler').Expression,
   hmrMeta: R3HmrMetadata,
+  decoratorArgsNode: t.ObjectExpression | null,
+  classLineNumber: number,
 ): string {
-  // Build factory expression
-  const factoryExpr = o.arrowFn(
+  // Build factory expression as a named function to match Angular compiler output
+  const factoryExpr = new o.FunctionExpr(
     [new o.FnParam('__ngFactoryType__')],
-    new o.InstantiateExpr(
-      new o.BinaryOperatorExpr(
-        o.BinaryOperator.Or,
-        o.variable('__ngFactoryType__'),
-        o.variable(className),
+    [
+      new o.ReturnStatement(
+        new o.InstantiateExpr(
+          new o.BinaryOperatorExpr(
+            o.BinaryOperator.Or,
+            o.variable('__ngFactoryType__'),
+            o.variable(className),
+          ),
+          [],
+        ),
       ),
-      [],
-    ),
+    ],
+    undefined,
+    undefined,
+    `${className}_Factory`,
   );
+
+  // Build additional statements for setClassMetadata and setClassDebugInfo IIFEs
+  // These come after the ɵcmp definition
+  const postDefinitionStatements: o.Statement[] = [];
+
+  // Build setClassMetadata IIFE if we have decorator args
+  if (decoratorArgsNode) {
+    // The decorators metadata: [{type: Component, args: [...]}]
+    const decorators = o.literalArr([
+      o.literalMap([
+        {key: 'type', value: o.variable('Component'), quoted: false},
+        {
+          key: 'args',
+          value: o.literalArr([new o.WrappedNodeExpr(decoratorArgsNode)]),
+          quoted: false,
+        },
+      ]),
+    ]);
+
+    const classMetadata: R3ClassMetadata = {
+      type: o.variable(className),
+      decorators,
+      ctorParameters: null,
+      propDecorators: null,
+    };
+
+    const classMetadataExpr = compileClassMetadata(classMetadata);
+    postDefinitionStatements.push(new o.ExpressionStatement(classMetadataExpr));
+  }
+
+  // Build setClassDebugInfo IIFE
+  const debugInfo: R3ClassDebugInfo = {
+    type: o.variable(className),
+    className: o.literal(className),
+    filePath: o.literal(hmrMeta.filePath),
+    lineNumber: o.literal(classLineNumber),
+    forbidOrphanRendering: false,
+  };
+  const debugInfoExpr = compileClassDebugInfo(debugInfo);
+  postDefinitionStatements.push(new o.ExpressionStatement(debugInfoExpr));
 
   const definitions = [
     {
@@ -498,22 +556,21 @@ function generateHmrUpdateModule(
     {
       name: 'ɵcmp',
       initializer: componentExpr,
-      statements: [],
+      statements: postDefinitionStatements,
     },
   ];
 
   const updateCallback = compileHmrUpdateCallback(definitions, constantPool.statements, hmrMeta);
 
   // Translate to Babel and generate code
-  const hmrTranslator = new BabelBackedTranslator();
+  // HMR update code doesn't need imports - namespaces come from function parameters
+  // Use 'ɵhmr' prefix for namespace variables to match Angular compiler output
+  const hmrTranslator = new BabelBackedTranslator('ɵhmr');
   const funcDecl = hmrTranslator.translateStatement(updateCallback);
 
-  // Get import declarations needed by the HMR update code
-  const hmrImports = hmrTranslator.getImportDeclarations();
-
-  // Wrap in export default with imports
+  // Wrap in export default (no imports needed for HMR update module)
   const exportDefault = t.exportDefaultDeclaration(funcDecl as t.FunctionDeclaration);
-  const program = t.program([...hmrImports, exportDefault]);
+  const program = t.program([exportDefault]);
 
   return generate(program, {comments: true, compact: false}).code;
 }

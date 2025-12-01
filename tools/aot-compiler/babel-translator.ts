@@ -90,6 +90,11 @@ interface ImportInfo {
 export class BabelBackedTranslator implements o.ExpressionVisitor, o.StatementVisitor {
   private imports = new Map<string, Map<string | null, string>>();
   private importCounter = 0;
+  /**
+   * @param namespacePrefix Prefix for namespace imports (default: 'i' for 'i0', 'i1', etc.)
+   *                        Use 'ɵhmr' for HMR update code to match Angular compiler output.
+   */
+  constructor(private namespacePrefix: string = 'i') {}
 
   /**
    * Translates an @angular/compiler Expression to a Babel Expression.
@@ -485,19 +490,21 @@ export class BabelBackedTranslator implements o.ExpressionVisitor, o.StatementVi
 
     const moduleImports = this.imports.get(moduleName)!;
 
-    // For @angular/core, always use namespace import (i0) to match Angular compiler output
+    // For @angular/core, always use namespace import to match Angular compiler output
     if (moduleName === '@angular/core' && symbolName !== null) {
       // Ensure we have a namespace import for @angular/core
       if (!moduleImports.has(null)) {
-        moduleImports.set(null, 'i0');
+        const namespaceName = `${this.namespacePrefix}0`;
+        moduleImports.set(null, namespaceName);
       }
-      // Return member expression: i0.symbolName
-      return t.memberExpression(t.identifier('i0'), t.identifier(symbolName));
+      const namespaceName = moduleImports.get(null)!;
+      // Return member expression: namespace.symbolName
+      return t.memberExpression(t.identifier(namespaceName), t.identifier(symbolName));
     }
 
     if (!moduleImports.has(symbolName)) {
       if (symbolName === null) {
-        moduleImports.set(symbolName, `_i${this.importCounter++}`);
+        moduleImports.set(symbolName, `_${this.namespacePrefix}${this.importCounter++}`);
       } else {
         moduleImports.set(symbolName, symbolName);
       }
