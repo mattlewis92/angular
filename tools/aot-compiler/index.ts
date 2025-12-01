@@ -20,9 +20,9 @@ import {
   type R3HmrMetadata,
   type SourceMap,
 } from '@angular/compiler';
+import {transformFromAstSync, PluginItem, PluginObj} from '@babel/core';
 import {parse, ParseResult} from '@babel/parser';
-import traverse, {NodePath} from '@babel/traverse';
-import generate from '@babel/generator';
+import {NodePath} from '@babel/traverse';
 import * as t from '@babel/types';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -165,7 +165,12 @@ export function compileAngularDecorators(
   filePath: string,
   options: CompileComponentOptions = {},
 ): CompilationResult {
-  const {generateSourceMap = true, readFile = defaultReadFile, enableHmr = false} = options;
+  const {
+    generateSourceMap = true,
+    readFile = defaultReadFile,
+    enableHmr = false,
+    babelPlugins = [],
+  } = options;
 
   try {
     // 1. Parse the source file
@@ -224,6 +229,7 @@ export function compileAngularDecorators(
       constantPool,
       generateSourceMap,
       enableHmr,
+      babelPlugins,
     );
 
     // Add any validation errors and compiled class names
@@ -258,7 +264,7 @@ export function compileHmrUpdateCode(
   className: string,
   options: CompileComponentOptions = {},
 ): string | null {
-  const {readFile = defaultReadFile} = options;
+  const {readFile = defaultReadFile, babelPlugins = []} = options;
 
   try {
     // 1. Parse the source file
@@ -297,6 +303,7 @@ export function compileHmrUpdateCode(
       hmrMeta,
       targetComponent.decoratorArgsNode,
       classLineNumber,
+      babelPlugins,
     );
   } catch {
     return null;
@@ -328,6 +335,7 @@ function transformAndEmitWithBabel(
   constantPool: ConstantPool,
   generateSourceMap: boolean,
   enableHmr: boolean,
+  babelPlugins: PluginItem[] = [],
 ): CompilationResult {
   // Create the translator for converting @angular/compiler expressions to Babel AST
   const translator = new BabelBackedTranslator();
@@ -412,137 +420,149 @@ function transformAndEmitWithBabel(
   // Get the import declarations from the translator
   const newImportDeclarations = translator.getImportDeclarations();
 
-  // Transform the AST using proper Babel path methods
-  traverse(ast, {
-    // Find and transform each component class
-    ClassDeclaration(path: NodePath<t.ClassDeclaration>) {
-      const currentClassName = path.node.id?.name;
-      if (!currentClassName) return;
+  // Create the Angular component transform plugin
+  const angularTransformPlugin = (): PluginObj => ({
+    visitor: {
+      // Find and transform each component class
+      ClassDeclaration(path: NodePath<t.ClassDeclaration>) {
+        const currentClassName = path.node.id?.name;
+        if (!currentClassName) return;
 
-      const transformData = componentTransforms.get(currentClassName);
-      if (!transformData) return;
+        const transformData = componentTransforms.get(currentClassName);
+        if (!transformData) return;
 
-      // Remove @Component decorator using path methods
-      const decorators = path.get('decorators');
-      if (Array.isArray(decorators)) {
-        for (const decoratorPath of decorators) {
-          const expr = decoratorPath.node.expression;
-          if (t.isCallExpression(expr)) {
-            const callee = expr.callee;
-            // Check for @Component() or @namespace.Component()
-            const isComponent =
-              (t.isIdentifier(callee) && callee.name === 'Component') ||
-              (t.isMemberExpression(callee) &&
-                t.isIdentifier(callee.property) &&
-                callee.property.name === 'Component');
-            if (isComponent) {
-              decoratorPath.remove();
+        // Remove @Component decorator using path methods
+        const decorators = path.get('decorators');
+        if (Array.isArray(decorators)) {
+          for (const decoratorPath of decorators) {
+            const expr = decoratorPath.node.expression;
+            if (t.isCallExpression(expr)) {
+              const callee = expr.callee;
+              // Check for @Component() or @namespace.Component()
+              const isComponent =
+                (t.isIdentifier(callee) && callee.name === 'Component') ||
+                (t.isMemberExpression(callee) &&
+                  t.isIdentifier(callee.property) &&
+                  callee.property.name === 'Component');
+              if (isComponent) {
+                decoratorPath.remove();
+              }
             }
           }
         }
-      }
 
-      // Create static block for ɵfac with named function to match Angular compiler output
-      const factoryFunction = t.functionExpression(
-        t.identifier(`${currentClassName}_Factory`),
-        [t.identifier('__ngFactoryType__')],
-        t.blockStatement([
-          t.returnStatement(
-            t.newExpression(
-              t.logicalExpression(
-                '||',
-                t.identifier('__ngFactoryType__'),
-                t.identifier(currentClassName),
+        // Create static block for ɵfac with named function to match Angular compiler output
+        const factoryFunction = t.functionExpression(
+          t.identifier(`${currentClassName}_Factory`),
+          [t.identifier('__ngFactoryType__')],
+          t.blockStatement([
+            t.returnStatement(
+              t.newExpression(
+                t.logicalExpression(
+                  '||',
+                  t.identifier('__ngFactoryType__'),
+                  t.identifier(currentClassName),
+                ),
+                [],
               ),
-              [],
+            ),
+          ]),
+        );
+        const factoryStaticBlock = t.staticBlock([
+          t.expressionStatement(
+            t.assignmentExpression(
+              '=',
+              t.memberExpression(t.thisExpression(), t.identifier('ɵfac')),
+              factoryFunction,
             ),
           ),
-        ]),
-      );
-      const factoryStaticBlock = t.staticBlock([
-        t.expressionStatement(
-          t.assignmentExpression(
-            '=',
-            t.memberExpression(t.thisExpression(), t.identifier('ɵfac')),
-            factoryFunction,
+        ]);
+
+        // Create static block for ɵcmp
+        const cmpStaticBlock = t.staticBlock([
+          t.expressionStatement(
+            t.assignmentExpression(
+              '=',
+              t.memberExpression(t.thisExpression(), t.identifier('ɵcmp')),
+              transformData.componentDefExpr,
+            ),
           ),
-        ),
-      ]);
+        ]);
 
-      // Create static block for ɵcmp
-      const cmpStaticBlock = t.staticBlock([
-        t.expressionStatement(
-          t.assignmentExpression(
-            '=',
-            t.memberExpression(t.thisExpression(), t.identifier('ɵcmp')),
-            transformData.componentDefExpr,
-          ),
-        ),
-      ]);
+        // Add the static blocks to the class body
+        const classBody = path.get('body');
+        classBody.pushContainer('body', factoryStaticBlock);
+        classBody.pushContainer('body', cmpStaticBlock);
+      },
 
-      // Add the static blocks to the class body
-      const classBody = path.get('body');
-      classBody.pushContainer('body', factoryStaticBlock);
-      classBody.pushContainer('body', cmpStaticBlock);
-    },
+      // Add imports at the beginning, additional statements after existing imports
+      Program: {
+        exit(path: NodePath<t.Program>) {
+          // Add new import declarations at the top
+          if (newImportDeclarations.length > 0) {
+            path.unshiftContainer('body', newImportDeclarations);
+          }
 
-    // Add imports at the beginning, additional statements after existing imports
-    Program: {
-      exit(path: NodePath<t.Program>) {
-        // Add new import declarations at the top
-        if (newImportDeclarations.length > 0) {
-          path.unshiftContainer('body', newImportDeclarations);
-        }
-
-        // Find the position after all import declarations to insert additional statements
-        if (additionalStatements.length > 0) {
-          const body = path.get('body');
-          let lastImportIndex = -1;
-          for (let i = 0; i < body.length; i++) {
-            if (body[i].isImportDeclaration()) {
-              lastImportIndex = i;
+          // Find the position after all import declarations to insert additional statements
+          if (additionalStatements.length > 0) {
+            const body = path.get('body');
+            let lastImportIndex = -1;
+            for (let i = 0; i < body.length; i++) {
+              if (body[i].isImportDeclaration()) {
+                lastImportIndex = i;
+              }
+            }
+            // Insert additional statements after the last import (or at the beginning if no imports)
+            const insertIndex = lastImportIndex + 1;
+            for (let i = additionalStatements.length - 1; i >= 0; i--) {
+              body[insertIndex].insertBefore(additionalStatements[i]);
             }
           }
-          // Insert additional statements after the last import (or at the beginning if no imports)
-          const insertIndex = lastImportIndex + 1;
-          for (let i = additionalStatements.length - 1; i >= 0; i--) {
-            body[insertIndex].insertBefore(additionalStatements[i]);
+
+          // Add metadata and debug info for all components (in order they were compiled)
+          for (const compiled of compiledComponents) {
+            const transformData = componentTransforms.get(compiled.className);
+            if (!transformData) continue;
+
+            // Add setClassMetadata IIFE
+            if (transformData.classMetadataStmt) {
+              path.pushContainer('body', transformData.classMetadataStmt);
+            }
+
+            // Add debug info IIFE
+            path.pushContainer('body', transformData.debugInfoStmt);
+
+            // Add HMR initializer
+            if (transformData.hmrInitializerStmt) {
+              path.pushContainer('body', transformData.hmrInitializerStmt);
+            }
           }
-        }
-
-        // Add metadata and debug info for all components (in order they were compiled)
-        for (const compiled of compiledComponents) {
-          const transformData = componentTransforms.get(compiled.className);
-          if (!transformData) continue;
-
-          // Add setClassMetadata IIFE
-          if (transformData.classMetadataStmt) {
-            path.pushContainer('body', transformData.classMetadataStmt);
-          }
-
-          // Add debug info IIFE
-          path.pushContainer('body', transformData.debugInfoStmt);
-
-          // Add HMR initializer
-          if (transformData.hmrInitializerStmt) {
-            path.pushContainer('body', transformData.hmrInitializerStmt);
-          }
-        }
+        },
       },
     },
   });
 
-  // Generate output code with source maps
-  const output = generate(
-    ast,
-    {
-      sourceMaps: generateSourceMap,
-      sourceFileName: filePath,
-      comments: true,
-      compact: false,
-    },
-    sourceCode,
-  );
+  // Transform using Babel's plugin pipeline - Angular transform runs first, then user plugins
+  const output = transformFromAstSync(ast, sourceCode, {
+    plugins: [angularTransformPlugin, ...babelPlugins],
+    sourceMaps: generateSourceMap,
+    sourceFileName: filePath,
+    comments: true,
+    compact: false,
+    // Disable config file lookup since we're providing all configuration
+    configFile: false,
+    babelrc: false,
+  });
+
+  // Handle transform failure
+  if (!output || output.code == null) {
+    return {
+      code: '',
+      sourceMap: null,
+      sourceMapComment: '',
+      errors: ['Babel transform failed to produce output'],
+    };
+  }
 
   // Extract source map info
   let sourceMap: SourceMap | null = null;
@@ -576,7 +596,7 @@ function transformAndEmitWithBabel(
     // Convert Babel's source map to Angular's SourceMap type
     sourceMap = {
       version: output.map.version,
-      file: output.map.file,
+      file: output.map.file ?? undefined,
       sourceRoot: output.map.sourceRoot ?? '',
       sources: uniqueSources,
       sourcesContent: uniqueSourcesContent,
@@ -680,6 +700,7 @@ function generateHmrUpdateModule(
   hmrMeta: R3HmrMetadata,
   decoratorArgsNode: t.ObjectExpression | null,
   classLineNumber: number,
+  babelPlugins: PluginItem[] = [],
 ): string {
   // Build factory expression as a named function to match Angular compiler output
   const factoryExpr = new o.FunctionExpr(
@@ -766,7 +787,14 @@ function generateHmrUpdateModule(
   const exportDefault = t.exportDefaultDeclaration(funcDecl as t.FunctionDeclaration);
   const program = t.program([exportDefault]);
 
-  return generate(program, {comments: true, compact: false}).code;
+  const output = transformFromAstSync(program, '', {
+    plugins: babelPlugins,
+    comments: true,
+    compact: false,
+    configFile: false,
+    babelrc: false,
+  });
+  return output?.code ?? '';
 }
 
 /**

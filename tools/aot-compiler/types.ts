@@ -7,7 +7,10 @@
  */
 
 import {ChangeDetectionStrategy, SourceMap, ViewEncapsulation} from '@angular/compiler';
+import type {PluginItem} from '@babel/core';
 import type * as t from '@babel/types';
+
+export type {PluginItem} from '@babel/core';
 
 /**
  * Angular decorator types that can be compiled.
@@ -44,6 +47,8 @@ export interface CompileComponentOptions {
   readFile?: (path: string) => string;
   /** Enable HMR code generation (default: false) */
   enableHmr?: boolean;
+  /** Additional Babel plugins to run alongside the Angular transforms */
+  babelPlugins?: PluginItem[];
 }
 
 /**
