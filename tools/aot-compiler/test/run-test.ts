@@ -110,11 +110,15 @@ async function testComponent(componentPath: string, name: string): Promise<boole
   console.log(`${colors.cyan}=== Testing ${name} ===${colors.reset}\n`);
 
   // Compile with our AOT compiler
-  const aotResult = compileAngularDecorators(componentPath, {enableHmr: true});
-
-  if (aotResult.errors.length > 0) {
+  let aotResult;
+  try {
+    aotResult = compileAngularDecorators(componentPath, {enableHmr: true});
+  } catch (error) {
     // tslint:disable-next-line:no-console
-    console.error(`${colors.red}AOT Compiler Errors:${colors.reset}`, aotResult.errors);
+    console.error(
+      `${colors.red}AOT Compiler Error:${colors.reset}`,
+      error instanceof Error ? error.message : String(error),
+    );
     return false;
   }
 

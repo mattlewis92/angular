@@ -172,79 +172,45 @@ export function compileAngularDecorators(
     babelPlugins = [],
   } = options;
 
-  try {
-    // 1. Parse the source file
-    const {ast, sourceCode, absolutePath} = parseFile(filePath, readFile);
+  // 1. Parse the source file
+  const {ast, sourceCode, absolutePath} = parseFile(filePath, readFile);
 
-    // 2. Extract ALL @Component decorator metadata from the AST
-    const extractedComponents = parseComponentDecorators(ast, sourceCode);
-    if (extractedComponents.length === 0) {
-      return {
-        code: '',
-        sourceMap: null,
-        sourceMapComment: '',
-        errors: ['No @Component decorator found in file'],
-      };
-    }
-
-    // 3. Validate and compile each component, collecting errors and compiled data
-    const errors: string[] = [];
-    const compiledComponents: CompiledComponentData[] = [];
-    const constantPool = new ConstantPool();
-
-    for (const extracted of extractedComponents) {
-      // Validate required metadata
-      if (!extracted.selector) {
-        errors.push(`${extracted.className}: Component must have a selector`);
-        continue;
-      }
-
-      try {
-        compiledComponents.push(
-          compileSingleComponent(extracted, absolutePath, readFile, constantPool),
-        );
-      } catch (componentError) {
-        errors.push(
-          `${extracted.className}: ${componentError instanceof Error ? componentError.message : String(componentError)}`,
-        );
-      }
-    }
-
-    // If all components failed, return errors
-    if (compiledComponents.length === 0) {
-      return {
-        code: '',
-        sourceMap: null,
-        sourceMapComment: '',
-        errors,
-      };
-    }
-
-    // 6. Transform AST and emit JavaScript with source maps
-    const result = transformAndEmitWithBabel(
-      ast,
-      sourceCode,
-      absolutePath,
-      compiledComponents,
-      constantPool,
-      generateSourceMap,
-      enableHmr,
-      babelPlugins,
-    );
-
-    // Add any validation errors and compiled class names
-    result.errors.push(...errors);
-    result.compiledClasses = compiledComponents.map((c) => c.className);
-
-    return result;
-  } catch (error) {
-    return {
-      code: '',
-      sourceMap: null,
-      sourceMapComment: '',
-      errors: [error instanceof Error ? error.message : String(error)],
-    };
+  // 2. Extract ALL @Component decorator metadata from the AST
+  const extractedComponents = parseComponentDecorators(ast, sourceCode);
+  if (extractedComponents.length === 0) {
+    throw new Error('No @Component decorator found in file');
   }
+
+  // 3. Validate and compile each component
+  const compiledComponents: CompiledComponentData[] = [];
+  const constantPool = new ConstantPool();
+
+  for (const extracted of extractedComponents) {
+    // Validate required metadata
+    if (!extracted.selector) {
+      throw new Error(`${extracted.className}: Component must have a selector`);
+    }
+
+    compiledComponents.push(
+      compileSingleComponent(extracted, absolutePath, readFile, constantPool),
+    );
+  }
+
+  // 4. Transform AST and emit JavaScript with source maps
+  const result = transformAndEmitWithBabel(
+    ast,
+    sourceCode,
+    absolutePath,
+    compiledComponents,
+    constantPool,
+    generateSourceMap,
+    enableHmr,
+    babelPlugins,
+  );
+
+  result.compiledClasses = compiledComponents.map((c) => c.className);
+
+  return result;
 }
 
 /**
@@ -263,51 +229,47 @@ export function compileHmrUpdateCode(
   filePath: string,
   className: string,
   options: CompileComponentOptions = {},
-): string | null {
+): string {
   const {readFile = defaultReadFile, babelPlugins = []} = options;
 
-  try {
-    // 1. Parse the source file
-    const {ast, sourceCode, absolutePath} = parseFile(filePath, readFile);
+  // 1. Parse the source file
+  const {ast, sourceCode, absolutePath} = parseFile(filePath, readFile);
 
-    // 2. Extract all component decorators and find the target
-    const extractedComponents = parseComponentDecorators(ast, sourceCode);
-    const targetComponent = extractedComponents.find((c) => c.className === className);
+  // 2. Extract all component decorators and find the target
+  const extractedComponents = parseComponentDecorators(ast, sourceCode);
+  const targetComponent = extractedComponents.find((c) => c.className === className);
 
-    if (!targetComponent || !targetComponent.selector) {
-      return null;
-    }
-
-    // 3. Compile the component
-    const constantPool = new ConstantPool();
-    const compiled = compileSingleComponent(targetComponent, absolutePath, readFile, constantPool);
-
-    // 4. Get class line number and named imports
-    const classLineNumber = findClassLineNumber(ast, className);
-    const namedImports = collectNamedImports(ast);
-
-    // 5. Build HMR metadata and generate update module
-    // First translate constant pool and component to register imports in the translator
-    const translator = new BabelBackedTranslator();
-    for (const stmt of constantPool.statements) {
-      translator.translateStatement(stmt);
-    }
-    translator.translateExpression(compiled.componentExpr);
-
-    const hmrMeta = buildHmrMetadata(className, absolutePath, translator, namedImports);
-
-    return generateHmrUpdateModule(
-      className,
-      constantPool,
-      compiled.componentExpr,
-      hmrMeta,
-      targetComponent.decoratorArgsNode,
-      classLineNumber,
-      babelPlugins,
-    );
-  } catch {
-    return null;
+  if (!targetComponent || !targetComponent.selector) {
+    throw new Error(`${className}: Component not found in file or has no selector`);
   }
+
+  // 3. Compile the component
+  const constantPool = new ConstantPool();
+  const compiled = compileSingleComponent(targetComponent, absolutePath, readFile, constantPool);
+
+  // 4. Get class line number and named imports
+  const classLineNumber = findClassLineNumber(ast, className);
+  const namedImports = collectNamedImports(ast);
+
+  // 5. Build HMR metadata and generate update module
+  // First translate constant pool and component to register imports in the translator
+  const translator = new BabelBackedTranslator();
+  for (const stmt of constantPool.statements) {
+    translator.translateStatement(stmt);
+  }
+  translator.translateExpression(compiled.componentExpr);
+
+  const hmrMeta = buildHmrMetadata(className, absolutePath, translator, namedImports);
+
+  return generateHmrUpdateModule(
+    className,
+    constantPool,
+    compiled.componentExpr,
+    hmrMeta,
+    targetComponent.decoratorArgsNode,
+    classLineNumber,
+    babelPlugins,
+  );
 }
 
 /**
@@ -556,12 +518,7 @@ function transformAndEmitWithBabel(
 
   // Handle transform failure
   if (!output || output.code == null) {
-    return {
-      code: '',
-      sourceMap: null,
-      sourceMapComment: '',
-      errors: ['Babel transform failed to produce output'],
-    };
+    throw new Error('Babel transform failed to produce output');
   }
 
   // Extract source map info
@@ -611,7 +568,6 @@ function transformAndEmitWithBabel(
     code: output.code,
     sourceMap,
     sourceMapComment,
-    errors: [],
   };
 }
 
@@ -853,21 +809,20 @@ if (require.main === module) {
   }
 
   const filePath = args[0];
-  const result = compileAngularDecorators(filePath);
 
-  if (result.errors.length > 0) {
-    console.error('Compilation errors:');
-    for (const error of result.errors) {
-      console.error(`  - ${error}`);
-    }
-    process.exit(1);
-  }
+  try {
+    const result = compileAngularDecorators(filePath);
 
-  // Output the compiled code with source map comment
-  // tslint:disable-next-line:no-console
-  console.log(result.code);
-  if (result.sourceMapComment) {
+    // Output the compiled code with source map comment
     // tslint:disable-next-line:no-console
-    console.log(result.sourceMapComment);
+    console.log(result.code);
+    if (result.sourceMapComment) {
+      // tslint:disable-next-line:no-console
+      console.log(result.sourceMapComment);
+    }
+  } catch (error) {
+    console.error('Compilation error:');
+    console.error(`  - ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
   }
 }

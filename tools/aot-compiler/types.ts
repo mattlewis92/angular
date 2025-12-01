@@ -29,8 +29,6 @@ export interface CompilationResult {
   sourceMap: SourceMap | null;
   /** Source map as inline comment string */
   sourceMapComment: string;
-  /** Any compilation errors (aggregated from all decorators) */
-  errors: string[];
   /** Names of all classes that were compiled */
   compiledClasses?: string[];
 }
