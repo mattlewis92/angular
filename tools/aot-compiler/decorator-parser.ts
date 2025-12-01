@@ -94,12 +94,16 @@ function extractMetadata(
     inputs: {},
     outputs: {},
     classBody,
+    decoratorArgsNode: null,
   };
 
   if (decorator.arguments.length === 0) return metadata;
 
   const arg = decorator.arguments[0];
   if (!t.isObjectExpression(arg)) return metadata;
+
+  // Store the decorator arguments node for setClassMetadata generation
+  metadata.decoratorArgsNode = arg;
 
   for (const prop of arg.properties) {
     if (t.isObjectProperty(prop) && t.isIdentifier(prop.key)) {

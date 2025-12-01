@@ -7,6 +7,7 @@
  */
 
 import {ChangeDetectionStrategy, SourceMap, ViewEncapsulation} from '@angular/compiler';
+import type * as t from '@babel/types';
 
 /**
  * Result of compiling a component.
@@ -72,6 +73,8 @@ export interface ExtractedComponentMetadata {
   outputs: Record<string, string>;
   /** The class body source code (without decorator) */
   classBody: string;
+  /** The decorator arguments Babel AST node (for setClassMetadata) */
+  decoratorArgsNode: t.ObjectExpression | null;
 }
 
 /**

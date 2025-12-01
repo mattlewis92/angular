@@ -8,6 +8,7 @@
 
 import {
   compileClassDebugInfo,
+  compileClassMetadata,
   compileComponentFromMetadata,
   compileHmrInitializer,
   compileHmrUpdateCallback,
@@ -15,6 +16,7 @@ import {
   makeBindingParser,
   outputAst as o,
   type R3ClassDebugInfo,
+  type R3ClassMetadata,
   type R3HmrMetadata,
   type SourceMap,
 } from '@angular/compiler';
@@ -123,6 +125,7 @@ export function compileComponent(
       resources,
       generateSourceMap,
       enableHmr,
+      extracted.decoratorArgsNode,
     );
   } catch (error) {
     return {
@@ -147,6 +150,7 @@ function transformAndEmitWithBabel(
   resources: ResolvedResources,
   generateSourceMap: boolean,
   enableHmr: boolean,
+  decoratorArgsNode: t.ObjectExpression | null,
 ): CompilationResult {
   // Create the translator for converting @angular/compiler expressions to Babel AST
   const translator = new BabelBackedTranslator();
@@ -186,6 +190,12 @@ function transformAndEmitWithBabel(
   const debugInfoExpr = compileClassDebugInfo(debugInfo);
   const debugInfoStmt = t.expressionStatement(translator.translateExpression(debugInfoExpr));
 
+  // Generate setClassMetadata IIFE if we have decorator args
+  let classMetadataStmt: t.Statement | null = null;
+  if (decoratorArgsNode) {
+    classMetadataStmt = buildSetClassMetadataIIFE(className, decoratorArgsNode, translator);
+  }
+
   // Generate HMR initializer if enabled
   let hmrInitializerStmt: t.Statement | null = null;
   let hmrUpdateCode: string | undefined;
@@ -204,12 +214,15 @@ function transformAndEmitWithBabel(
 
   // Transform the AST using proper Babel path methods
   traverse(ast, {
-    // Remove @angular/core imports (they're replaced by runtime imports)
-    // Only remove imports from the original source (which have location info).
-    // Programmatically created imports won't have loc, so they won't be removed.
+    // Handle @angular/core imports
+    // Keep original imports when we have decorator args (needed for setClassMetadata).
+    // Remove them only when not generating metadata, to avoid unused imports.
     ImportDeclaration(path: NodePath<t.ImportDeclaration>) {
       if (path.node.source.value === '@angular/core' && path.node.loc) {
-        path.remove();
+        // Keep the import if we're generating setClassMetadata (it uses the named imports)
+        if (!decoratorArgsNode) {
+          path.remove();
+        }
       }
     },
 
@@ -280,6 +293,11 @@ function transformAndEmitWithBabel(
           path.unshiftContainer('body', nodesToPrepend);
         }
 
+        // Add setClassMetadata IIFE after the class (before debug info)
+        if (classMetadataStmt) {
+          path.pushContainer('body', classMetadataStmt);
+        }
+
         // Add debug info IIFE after the class
         path.pushContainer('body', debugInfoStmt);
 
@@ -348,6 +366,45 @@ function transformAndEmitWithBabel(
     errors: [],
     hmrUpdateCode,
   };
+}
+
+/**
+ * Builds the setClassMetadata IIFE statement using Angular's compileClassMetadata.
+ *
+ * Generates:
+ * (() => {
+ *   (typeof ngDevMode === "undefined" || ngDevMode) &&
+ *     i0.ɵsetClassMetadata(ClassName, [{type: Component, args: [...]}], null, null);
+ * })();
+ */
+function buildSetClassMetadataIIFE(
+  className: string,
+  decoratorArgsNode: t.ObjectExpression,
+  translator: BabelBackedTranslator,
+): t.Statement {
+  // Build the decorators metadata expression: [{type: Component, args: [...]}]
+  // Use WrappedNodeExpr to wrap Babel AST nodes so the translator returns them directly
+  const decorators = o.literalArr([
+    o.literalMap([
+      {key: 'type', value: new o.WrappedNodeExpr(t.identifier('Component')), quoted: false},
+      {
+        key: 'args',
+        value: o.literalArr([new o.WrappedNodeExpr(decoratorArgsNode)]),
+        quoted: false,
+      },
+    ]),
+  ]);
+
+  // Build R3ClassMetadata and compile using Angular's helper
+  const classMetadata: R3ClassMetadata = {
+    type: new o.ReadVarExpr(className),
+    decorators,
+    ctorParameters: null,
+    propDecorators: null,
+  };
+
+  const classMetadataExpr = compileClassMetadata(classMetadata);
+  return t.expressionStatement(translator.translateExpression(classMetadataExpr));
 }
 
 /**
