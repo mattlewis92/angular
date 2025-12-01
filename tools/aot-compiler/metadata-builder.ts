@@ -13,6 +13,7 @@ import {
   DeclarationListEmitMode,
   DeferBlockDepsEmitMode,
   DEFAULT_INTERPOLATION_CONFIG,
+  ForwardRefHandling,
   InterpolationConfig,
   outputAst as o,
   ParseLocation,
@@ -40,7 +41,15 @@ import traverse from '@babel/traverse';
 import * as t from '@babel/types';
 import * as path from 'path';
 
-import {ExtractedComponentMetadata, ImportMetadata, ResolvedResources} from './types';
+import {
+  ExtractedComponentMetadata,
+  HostDirectiveMetadata,
+  ImportMetadata,
+  InputMetadata,
+  ParsedHostBindings,
+  QueryMetadata,
+  ResolvedResources,
+} from './types';
 
 /**
  * Result of building R3 component metadata, including deferred import information.
@@ -89,12 +98,25 @@ export function buildR3ComponentMetadata(
     throw new Error(`Template parsing errors:\n${errorMessages}`);
   }
 
-  // Create source span for type metadata
-  const sourceFile = new ParseSourceFile('', sourceFilePath);
-  const typeSourceSpan = new ParseSourceSpan(
-    new ParseLocation(sourceFile, 0, 0, 0),
-    new ParseLocation(sourceFile, 0, 0, 0),
-  );
+  // Create source span for type metadata using actual class location
+  let typeSourceSpan: ParseSourceSpan;
+  if (extracted.classLocation) {
+    const sourceFile = new ParseSourceFile(resources.template, sourceFilePath);
+    const startLoc = new ParseLocation(
+      sourceFile,
+      0, // offset - not critical for most use cases
+      extracted.classLocation.line,
+      extracted.classLocation.column,
+    );
+    typeSourceSpan = new ParseSourceSpan(startLoc, startLoc);
+  } else {
+    // Fallback to empty span
+    const sourceFile = new ParseSourceFile('', sourceFilePath);
+    typeSourceSpan = new ParseSourceSpan(
+      new ParseLocation(sourceFile, 0, 0, 0),
+      new ParseLocation(sourceFile, 0, 0, 0),
+    );
+  }
 
   // Build the R3Reference for the component type
   // We use a variable reference since we don't have the actual class at compile time
@@ -103,8 +125,8 @@ export function buildR3ComponentMetadata(
     type: new ReadVarExpr(extracted.className),
   };
 
-  // Build host metadata
-  const host = buildHostMetadata(extracted.host);
+  // Build host metadata from parsed host bindings
+  const host = buildHostMetadata(extracted.hostBindings);
 
   // Build inputs metadata
   const inputs = buildInputsMetadata(extracted.inputs);
@@ -130,7 +152,7 @@ export function buildR3ComponentMetadata(
     metadata: {
       name: extracted.className,
       type,
-      typeArgumentCount: 0,
+      typeArgumentCount: extracted.typeArgumentCount,
       typeSourceSpan,
       selector: extracted.selector,
       deps: null, // Constructor dependencies - not needed for template compilation
@@ -145,7 +167,7 @@ export function buildR3ComponentMetadata(
       // Declarations (empty for standalone components without imports)
       declarations: [],
       declarationListEmitMode: DeclarationListEmitMode.Direct,
-      hasDirectiveDependencies: false,
+      hasDirectiveDependencies: extracted.imports.length > 0,
 
       // Defer blocks metadata
       defer: deferResult.metadata,
@@ -155,8 +177,10 @@ export function buildR3ComponentMetadata(
       encapsulation,
 
       // Other metadata
-      animations: null,
-      viewProviders: null,
+      animations: extracted.animations ? new o.WrappedNodeExpr(extracted.animations) : null,
+      viewProviders: extracted.viewProviders
+        ? new o.WrappedNodeExpr(extracted.viewProviders)
+        : null,
       relativeContextFilePath: sourceFilePath,
       i18nUseExternalIds: true,
       interpolation: interpolationConfig,
@@ -167,61 +191,54 @@ export function buildR3ComponentMetadata(
       inputs,
       outputs: extracted.outputs,
       host,
-      queries: [],
-      viewQueries: [],
-      providers: null,
-      exportAs: null,
-      lifecycle: {usesOnChanges: false},
-      usesInheritance: false,
+      queries: buildQueriesMetadata(extracted.queries),
+      viewQueries: buildQueriesMetadata(extracted.viewQueries),
+      providers: extracted.providers ? new o.WrappedNodeExpr(extracted.providers) : null,
+      exportAs: extracted.exportAs,
+      lifecycle: {usesOnChanges: extracted.usesOnChanges},
+      usesInheritance: extracted.usesInheritance,
       fullInheritance: false,
       isStandalone: extracted.standalone,
-      isSignal: false,
-      hostDirectives: null,
+      isSignal: extracted.isSignal,
+      hostDirectives: buildHostDirectivesMetadata(extracted.hostDirectives),
     },
     deferredImportNames: deferResult.deferredImportNames,
   };
 }
 
 /**
- * Builds R3HostMetadata from the extracted host bindings.
+ * Builds R3HostMetadata from the parsed host bindings.
  */
-function buildHostMetadata(host: Record<string, string>): R3HostMetadata {
-  const attributes: {[key: string]: any} = {};
-  const listeners: {[key: string]: string} = {};
-  const properties: {[key: string]: string} = {};
+function buildHostMetadata(hostBindings: ParsedHostBindings): R3HostMetadata {
+  // Convert static attributes to o.Expression values
+  const attributes: {[key: string]: o.Expression} = {};
+  for (const [key, value] of Object.entries(hostBindings.attributes)) {
+    attributes[key] = o.literal(value);
+  }
 
-  for (const [key, value] of Object.entries(host)) {
-    if (key.startsWith('(') && key.endsWith(')')) {
-      // Event listener: (click)="onClick()"
-      listeners[key.slice(1, -1)] = value;
-    } else if (key.startsWith('[') && key.endsWith(']')) {
-      // Property binding: [class.active]="isActive"
-      properties[key.slice(1, -1)] = value;
-    } else if (key.startsWith('@')) {
-      // Animation trigger: @trigger
-      properties[key] = value;
-    } else {
-      // Static attribute
-      // Note: We store as expression but for static attributes we'll need to handle this
-      // The Angular compiler expects o.Expression here, but for simplicity we store as literal
-      attributes[key] = value;
-    }
+  // Build special attributes (class and style)
+  const specialAttributes: {classAttr?: string; styleAttr?: string} = {};
+  if (hostBindings.specialAttributes.classAttr) {
+    specialAttributes.classAttr = hostBindings.specialAttributes.classAttr;
+  }
+  if (hostBindings.specialAttributes.styleAttr) {
+    specialAttributes.styleAttr = hostBindings.specialAttributes.styleAttr;
   }
 
   return {
-    attributes: {}, // Static attributes need to be o.Expression, handle separately
-    listeners,
-    properties,
-    specialAttributes: {},
+    attributes,
+    listeners: hostBindings.listeners,
+    properties: hostBindings.properties,
+    specialAttributes,
   };
 }
 
 /**
  * Builds R3InputMetadata from the extracted inputs.
  */
-function buildInputsMetadata(
-  inputs: Record<string, {bindingPropertyName: string; required: boolean}>,
-): {[field: string]: R3InputMetadata} {
+function buildInputsMetadata(inputs: Record<string, InputMetadata>): {
+  [field: string]: R3InputMetadata;
+} {
   const result: {[field: string]: R3InputMetadata} = {};
 
   for (const [propName, input] of Object.entries(inputs)) {
@@ -229,12 +246,72 @@ function buildInputsMetadata(
       classPropertyName: propName,
       bindingPropertyName: input.bindingPropertyName,
       required: input.required,
-      isSignal: false,
-      transformFunction: null,
+      isSignal: input.isSignal,
+      transformFunction: input.transform ? new o.WrappedNodeExpr(input.transform) : null,
     };
   }
 
   return result;
+}
+
+/**
+ * Builds R3QueryMetadata array from extracted queries.
+ */
+function buildQueriesMetadata(queries: QueryMetadata[]): any[] {
+  return queries.map((query) => {
+    let predicate: string[] | {forwardRef: ForwardRefHandling; expression: o.Expression};
+
+    if (Array.isArray(query.predicate)) {
+      // Array of template reference selectors
+      predicate = query.predicate;
+    } else if (query.predicate.length > 0) {
+      // String predicate - could be template ref or class name
+      if (/^[A-Z]/.test(query.predicate)) {
+        // Looks like a class reference (PascalCase) - wrap as type predicate
+        predicate = {
+          forwardRef: ForwardRefHandling.None,
+          expression: new ReadVarExpr(query.predicate),
+        };
+      } else {
+        // Template reference selector - wrap in array
+        predicate = [query.predicate];
+      }
+    } else {
+      predicate = [];
+    }
+
+    return {
+      propertyName: query.propertyName,
+      predicate,
+      first: query.first,
+      read: query.read ? new ReadVarExpr(query.read) : null,
+      static: query.static,
+      descendants: query.descendants,
+      emitDistinctChangesOnly: true, // Default for modern Angular
+      isSignal: query.isSignal,
+    };
+  });
+}
+
+/**
+ * Builds R3HostDirectiveMeta array from extracted host directives.
+ */
+function buildHostDirectivesMetadata(hostDirectives: HostDirectiveMetadata[] | null): any[] | null {
+  if (!hostDirectives || hostDirectives.length === 0) {
+    return null;
+  }
+
+  return hostDirectives.map((hd) => ({
+    // R3Reference expects { value: Expression, type: Expression }
+    directive: {
+      value: new ReadVarExpr(hd.directive),
+      type: new ReadVarExpr(hd.directive),
+    },
+    isForwardReference: false,
+    // inputs/outputs should be { [publicName]: bindingName } or null
+    inputs: hd.inputs ?? null,
+    outputs: hd.outputs ?? null,
+  }));
 }
 
 /**

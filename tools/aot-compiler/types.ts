@@ -75,9 +75,9 @@ export interface ExtractedComponentMetadata {
   preserveWhitespaces: boolean;
   /** Custom interpolation markers [start, end] */
   interpolation: [string, string] | null;
-  /** Host bindings, listeners, and attributes */
-  host: Record<string, string>;
-  /** Component inputs */
+  /** Host bindings separated by type */
+  hostBindings: ParsedHostBindings;
+  /** Component inputs (from decorator and class properties) */
   inputs: Record<string, InputMetadata>;
   /** Component outputs */
   outputs: Record<string, string>;
@@ -87,6 +87,36 @@ export interface ExtractedComponentMetadata {
   classBody: string;
   /** The decorator arguments Babel AST node (for setClassMetadata) */
   decoratorArgsNode: t.ObjectExpression | null;
+
+  // New fields for complete metadata extraction
+
+  /** Number of generic type parameters on the class */
+  typeArgumentCount: number;
+  /** Location of the class identifier for source span */
+  classLocation: {line: number; column: number} | null;
+  /** View queries (@ViewChild, @ViewChildren) */
+  viewQueries: QueryMetadata[];
+  /** Content queries (@ContentChild, @ContentChildren) */
+  queries: QueryMetadata[];
+  /** Export names (comma-separated in decorator, split into array) */
+  exportAs: string[] | null;
+  /** Whether the class has an ngOnChanges method */
+  usesOnChanges: boolean;
+  /** Whether the class extends another class */
+  usesInheritance: boolean;
+  /** Whether the component uses signals (signals: true in decorator) */
+  isSignal: boolean;
+  /** Providers array expression */
+  providers: t.Expression | null;
+  /** View providers array expression */
+  viewProviders: t.Expression | null;
+  /** Animations array expression */
+  animations: t.Expression | null;
+  /** Host directives metadata */
+  hostDirectives: HostDirectiveMetadata[] | null;
+
+  /** @deprecated Use hostBindings instead */
+  host: Record<string, string>;
 }
 
 /**
@@ -97,6 +127,58 @@ export interface InputMetadata {
   bindingPropertyName: string;
   /** Whether the input is required */
   required: boolean;
+  /** Whether this is a signal-based input */
+  isSignal: boolean;
+  /** Transform function expression (for @Input({ transform: fn })) */
+  transform: t.Expression | null;
+}
+
+/**
+ * Metadata for a query decorator (@ViewChild, @ViewChildren, @ContentChild, @ContentChildren).
+ */
+export interface QueryMetadata {
+  /** The property name on the class */
+  propertyName: string;
+  /** The predicate - selector string(s) or class name reference */
+  predicate: string | string[];
+  /** True for Child (single), false for Children (multiple) */
+  first: boolean;
+  /** Type to read from matched elements */
+  read: string | null;
+  /** Whether query results are available in ngOnInit (static: true) */
+  static: boolean;
+  /** Whether to query descendants (default true for most queries) */
+  descendants: boolean;
+  /** Whether this is a signal-based query */
+  isSignal: boolean;
+}
+
+/**
+ * Metadata for a host directive.
+ */
+export interface HostDirectiveMetadata {
+  /** The class name of the directive */
+  directive: string;
+  /** The import path of the directive */
+  modulePath: string;
+  /** Input mappings: { publicName: bindingName } */
+  inputs: Record<string, string> | null;
+  /** Output mappings: { publicName: bindingName } */
+  outputs: Record<string, string> | null;
+}
+
+/**
+ * Parsed host bindings separated by type.
+ */
+export interface ParsedHostBindings {
+  /** Event listeners: (click)="handler()" */
+  listeners: Record<string, string>;
+  /** Property bindings: [class.active]="isActive" */
+  properties: Record<string, string>;
+  /** Static attributes: role="button" */
+  attributes: Record<string, string>;
+  /** Special attributes: class and style */
+  specialAttributes: {classAttr?: string; styleAttr?: string};
 }
 
 /**

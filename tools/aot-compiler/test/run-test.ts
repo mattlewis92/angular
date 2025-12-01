@@ -219,6 +219,13 @@ async function main(): Promise<void> {
   );
   allPassed = allPassed && deferResult;
 
+  // Test full metadata component (comprehensive metadata extraction)
+  const fullMetaResult = await testComponent(
+    path.join(testDir, 'full-metadata.component.ts'),
+    'Full Metadata Component',
+  );
+  allPassed = allPassed && fullMetaResult;
+
   if (!allPassed) {
     process.exit(1);
   }

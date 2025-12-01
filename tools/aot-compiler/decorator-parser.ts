@@ -11,7 +11,14 @@ import type {ParseResult} from '@babel/parser';
 import traverse, {NodePath} from '@babel/traverse';
 import * as t from '@babel/types';
 
-import {ExtractedComponentMetadata, ImportMetadata, InputMetadata} from './types';
+import {
+  ExtractedComponentMetadata,
+  HostDirectiveMetadata,
+  ImportMetadata,
+  InputMetadata,
+  ParsedHostBindings,
+  QueryMetadata,
+} from './types';
 
 /**
  * Parses all @Component decorators from a pre-parsed Babel AST and extracts metadata.
@@ -110,6 +117,14 @@ function extractMetadata(
   // Extract class body - get the content between the class braces
   const classBody = extractClassBody(classDecl, sourceCode);
 
+  // Extract class-level metadata
+  const typeArgumentCount = getTypeArgumentCount(classDecl);
+  const classLocation = getClassLocation(classDecl);
+  const usesOnChanges = detectUsesOnChanges(classDecl);
+  const usesInheritance = detectUsesInheritance(classDecl);
+  const {queries, viewQueries} = extractQueries(classDecl);
+  const signalInputs = extractSignalInputs(classDecl);
+
   const metadata: ExtractedComponentMetadata = {
     className,
     selector: null,
@@ -122,12 +137,27 @@ function extractMetadata(
     standalone: true, // Default in modern Angular
     preserveWhitespaces: false,
     interpolation: null,
-    host: {},
-    inputs: {},
+    hostBindings: {listeners: {}, properties: {}, attributes: {}, specialAttributes: {}},
+    host: {}, // Deprecated, kept for compatibility
+    inputs: {...signalInputs}, // Start with signal inputs, decorator inputs will be merged
     outputs: {},
     imports: [],
     classBody,
     decoratorArgsNode: null,
+
+    // New fields
+    typeArgumentCount,
+    classLocation,
+    viewQueries,
+    queries,
+    exportAs: null,
+    usesOnChanges,
+    usesInheritance,
+    isSignal: false,
+    providers: null,
+    viewProviders: null,
+    animations: null,
+    hostDirectives: null,
   };
 
   if (decorator.arguments.length === 0) return metadata;
@@ -180,17 +210,51 @@ function extractMetadata(
         case 'interpolation':
           metadata.interpolation = extractInterpolation(value);
           break;
-        case 'host':
-          metadata.host = extractHostBindings(value);
+        case 'host': {
+          const parsed = extractParsedHostBindings(value);
+          metadata.hostBindings = parsed;
+          metadata.host = extractHostBindings(value); // Keep deprecated field populated
           break;
-        case 'inputs':
-          metadata.inputs = extractInputs(value);
+        }
+        case 'inputs': {
+          // Merge with signal inputs (signal inputs take precedence if same name)
+          const decoratorInputs = extractInputs(value);
+          metadata.inputs = {...decoratorInputs, ...metadata.inputs};
           break;
+        }
         case 'outputs':
           metadata.outputs = extractOutputs(value);
           break;
         case 'imports':
           metadata.imports = extractImports(value, importMap);
+          break;
+        case 'exportAs': {
+          const exportAsStr = extractStringValue(value);
+          if (exportAsStr) {
+            metadata.exportAs = exportAsStr.split(',').map((s) => s.trim());
+          }
+          break;
+        }
+        case 'providers':
+          if (t.isExpression(value)) {
+            metadata.providers = value;
+          }
+          break;
+        case 'viewProviders':
+          if (t.isExpression(value)) {
+            metadata.viewProviders = value;
+          }
+          break;
+        case 'animations':
+          if (t.isExpression(value)) {
+            metadata.animations = value;
+          }
+          break;
+        case 'hostDirectives':
+          metadata.hostDirectives = extractHostDirectives(value, importMap);
+          break;
+        case 'signals':
+          metadata.isSignal = extractBooleanValue(value) ?? false;
           break;
       }
     }
@@ -349,21 +413,35 @@ function extractInputs(node: t.Node): Record<string, InputMetadata> {
         result[propName] = {
           bindingPropertyName: bindingName,
           required: false,
+          isSignal: false,
+          transform: null,
         };
+        continue;
       }
-      // Handle object inputs like { name: 'propName', alias: 'bindingName', required: true }
+      // Handle object inputs like { name: 'propName', alias: 'bindingName', required: true, transform: fn }
       if (t.isObjectExpression(element)) {
         let propName: string | null = null;
         let bindingName: string | null = null;
         let required = false;
+        let transform: t.Expression | null = null;
+
         for (const prop of element.properties) {
           if (t.isObjectProperty(prop) && t.isIdentifier(prop.key)) {
-            if (prop.key.name === 'name') {
-              propName = extractStringValue(prop.value);
-            } else if (prop.key.name === 'alias') {
-              bindingName = extractStringValue(prop.value);
-            } else if (prop.key.name === 'required') {
-              required = extractBooleanValue(prop.value) ?? false;
+            switch (prop.key.name) {
+              case 'name':
+                propName = extractStringValue(prop.value);
+                break;
+              case 'alias':
+                bindingName = extractStringValue(prop.value);
+                break;
+              case 'required':
+                required = extractBooleanValue(prop.value) ?? false;
+                break;
+              case 'transform':
+                if (t.isExpression(prop.value)) {
+                  transform = prop.value;
+                }
+                break;
             }
           }
         }
@@ -371,6 +449,8 @@ function extractInputs(node: t.Node): Record<string, InputMetadata> {
           result[propName] = {
             bindingPropertyName: bindingName || propName,
             required,
+            isSignal: false,
+            transform,
           };
         }
       }
@@ -442,4 +522,376 @@ function extractClassBody(classDecl: t.ClassDeclaration, sourceCode: string): st
   }
 
   return members.join('\n\n');
+}
+
+// =============================================================================
+// New helper functions for complete metadata extraction
+// =============================================================================
+
+/**
+ * Gets the number of generic type parameters on the class.
+ * e.g., class Foo<T, U> has typeArgumentCount: 2
+ */
+function getTypeArgumentCount(classDecl: t.ClassDeclaration): number {
+  const typeParams = classDecl.typeParameters;
+  if (typeParams && t.isTSTypeParameterDeclaration(typeParams)) {
+    return typeParams.params.length;
+  }
+  return 0;
+}
+
+/**
+ * Gets the location of the class identifier for typeSourceSpan.
+ */
+function getClassLocation(classDecl: t.ClassDeclaration): {line: number; column: number} | null {
+  if (classDecl.id?.loc) {
+    return {
+      line: classDecl.id.loc.start.line,
+      column: classDecl.id.loc.start.column,
+    };
+  }
+  return null;
+}
+
+/**
+ * Detects if the class has an ngOnChanges method (implements OnChanges).
+ */
+function detectUsesOnChanges(classDecl: t.ClassDeclaration): boolean {
+  for (const member of classDecl.body.body) {
+    if (
+      t.isClassMethod(member) &&
+      t.isIdentifier(member.key) &&
+      member.key.name === 'ngOnChanges' &&
+      !member.static
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Detects if the class extends another class.
+ */
+function detectUsesInheritance(classDecl: t.ClassDeclaration): boolean {
+  return classDecl.superClass !== null;
+}
+
+/**
+ * Extracts parsed host bindings separated by type.
+ */
+function extractParsedHostBindings(node: t.Node): ParsedHostBindings {
+  const result: ParsedHostBindings = {
+    listeners: {},
+    properties: {},
+    attributes: {},
+    specialAttributes: {},
+  };
+
+  if (!t.isObjectExpression(node)) {
+    return result;
+  }
+
+  for (const prop of node.properties) {
+    if (!t.isObjectProperty(prop)) continue;
+
+    let key: string | null = null;
+    if (t.isIdentifier(prop.key)) {
+      key = prop.key.name;
+    } else if (t.isStringLiteral(prop.key)) {
+      key = prop.key.value;
+    }
+    if (!key) continue;
+
+    const value = extractStringValue(prop.value);
+    if (value === null) continue;
+
+    if (key.startsWith('(') && key.endsWith(')')) {
+      // Event listener: (click)="onClick()"
+      result.listeners[key.slice(1, -1)] = value;
+    } else if (key.startsWith('[') && key.endsWith(']')) {
+      // Property binding: [class.active]="isActive"
+      result.properties[key.slice(1, -1)] = value;
+    } else if (key.startsWith('@')) {
+      // Animation trigger
+      result.properties[key] = value;
+    } else if (key === 'class') {
+      // Special attribute: class
+      result.specialAttributes.classAttr = value;
+    } else if (key === 'style') {
+      // Special attribute: style
+      result.specialAttributes.styleAttr = value;
+    } else {
+      // Static attribute: role="button"
+      result.attributes[key] = value;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Extracts query metadata from @ViewChild, @ViewChildren, @ContentChild, @ContentChildren decorators.
+ */
+function extractQueries(classDecl: t.ClassDeclaration): {
+  queries: QueryMetadata[];
+  viewQueries: QueryMetadata[];
+} {
+  const queries: QueryMetadata[] = [];
+  const viewQueries: QueryMetadata[] = [];
+
+  for (const member of classDecl.body.body) {
+    if (!t.isClassProperty(member)) continue;
+    if (!t.isIdentifier(member.key)) continue;
+
+    const decorators = member.decorators;
+    if (!decorators) continue;
+
+    const propertyName = member.key.name;
+
+    for (const decorator of decorators) {
+      if (!t.isCallExpression(decorator.expression)) continue;
+
+      const callee = decorator.expression.callee;
+      let decoratorName: string | null = null;
+
+      if (t.isIdentifier(callee)) {
+        decoratorName = callee.name;
+      }
+
+      if (!decoratorName) continue;
+
+      const isViewChild = decoratorName === 'ViewChild';
+      const isViewChildren = decoratorName === 'ViewChildren';
+      const isContentChild = decoratorName === 'ContentChild';
+      const isContentChildren = decoratorName === 'ContentChildren';
+
+      if (!isViewChild && !isViewChildren && !isContentChild && !isContentChildren) {
+        continue;
+      }
+
+      const queryMeta = parseQueryDecorator(propertyName, decorator.expression, decoratorName);
+
+      if (isViewChild || isViewChildren) {
+        viewQueries.push(queryMeta);
+      } else {
+        queries.push(queryMeta);
+      }
+    }
+  }
+
+  return {queries, viewQueries};
+}
+
+/**
+ * Parses a query decorator call expression into QueryMetadata.
+ */
+function parseQueryDecorator(
+  propertyName: string,
+  callExpr: t.CallExpression,
+  decoratorName: string,
+): QueryMetadata {
+  const isFirst = decoratorName === 'ViewChild' || decoratorName === 'ContentChild';
+  const isContentQuery = decoratorName === 'ContentChild' || decoratorName === 'ContentChildren';
+
+  // Default values
+  let predicate: string | string[] = '';
+  let read: string | null = null;
+  let isStatic = false;
+  let descendants = isContentQuery ? false : true; // ContentChild defaults to false, others to true
+
+  // First argument is the predicate (selector or type reference)
+  const predicateArg = callExpr.arguments[0];
+  if (predicateArg) {
+    if (t.isStringLiteral(predicateArg)) {
+      predicate = predicateArg.value;
+    } else if (t.isIdentifier(predicateArg)) {
+      predicate = predicateArg.name;
+    } else if (t.isArrayExpression(predicateArg)) {
+      predicate = predicateArg.elements
+        .filter((el): el is t.StringLiteral => t.isStringLiteral(el))
+        .map((el) => el.value);
+    }
+  }
+
+  // Second argument is options object
+  const optionsArg = callExpr.arguments[1];
+  if (optionsArg && t.isObjectExpression(optionsArg)) {
+    for (const prop of optionsArg.properties) {
+      if (!t.isObjectProperty(prop) || !t.isIdentifier(prop.key)) continue;
+
+      switch (prop.key.name) {
+        case 'read':
+          if (t.isIdentifier(prop.value)) {
+            read = prop.value.name;
+          }
+          break;
+        case 'static':
+          isStatic = extractBooleanValue(prop.value) ?? false;
+          break;
+        case 'descendants':
+          descendants = extractBooleanValue(prop.value) ?? descendants;
+          break;
+      }
+    }
+  }
+
+  return {
+    propertyName,
+    predicate,
+    first: isFirst,
+    read,
+    static: isStatic,
+    descendants,
+    isSignal: false,
+  };
+}
+
+/**
+ * Extracts signal-based inputs from class properties.
+ * Detects input() and input.required() calls.
+ */
+function extractSignalInputs(classDecl: t.ClassDeclaration): Record<string, InputMetadata> {
+  const result: Record<string, InputMetadata> = {};
+
+  for (const member of classDecl.body.body) {
+    if (!t.isClassProperty(member)) continue;
+    if (!t.isIdentifier(member.key)) continue;
+    if (!member.value || !t.isCallExpression(member.value)) continue;
+
+    const callee = member.value.callee;
+    let isInputCall = false;
+    let isRequired = false;
+
+    // Check for input() call
+    if (t.isIdentifier(callee) && callee.name === 'input') {
+      isInputCall = true;
+    }
+
+    // Check for input.required() call
+    if (
+      t.isMemberExpression(callee) &&
+      t.isIdentifier(callee.object) &&
+      callee.object.name === 'input' &&
+      t.isIdentifier(callee.property) &&
+      callee.property.name === 'required'
+    ) {
+      isInputCall = true;
+      isRequired = true;
+    }
+
+    if (!isInputCall) continue;
+
+    const propName = member.key.name;
+    let alias = propName;
+
+    // Check for options argument with alias
+    const args = member.value.arguments;
+    // For input.required(), first arg is options; for input(), second arg is options
+    const optionsArg = isRequired ? args[0] : args[1];
+    if (optionsArg && t.isObjectExpression(optionsArg)) {
+      for (const prop of optionsArg.properties) {
+        if (t.isObjectProperty(prop) && t.isIdentifier(prop.key) && prop.key.name === 'alias') {
+          alias = extractStringValue(prop.value) || propName;
+        }
+      }
+    }
+
+    result[propName] = {
+      bindingPropertyName: alias,
+      required: isRequired,
+      isSignal: true,
+      transform: null, // Signal inputs handle transforms internally
+    };
+  }
+
+  return result;
+}
+
+/**
+ * Extracts host directives from the hostDirectives array.
+ */
+function extractHostDirectives(
+  node: t.Node,
+  importMap: Map<string, string>,
+): HostDirectiveMetadata[] | null {
+  if (!t.isArrayExpression(node)) return null;
+
+  const result: HostDirectiveMetadata[] = [];
+
+  for (const element of node.elements) {
+    if (!element) continue;
+
+    // Simple reference: hostDirectives: [MyDirective]
+    if (t.isIdentifier(element)) {
+      const modulePath = importMap.get(element.name);
+      if (modulePath) {
+        result.push({
+          directive: element.name,
+          modulePath,
+          inputs: null,
+          outputs: null,
+        });
+      }
+      continue;
+    }
+
+    // Object form: hostDirectives: [{ directive: MyDirective, inputs: [...], outputs: [...] }]
+    if (t.isObjectExpression(element)) {
+      let directive: string | null = null;
+      let inputs: Record<string, string> | null = null;
+      let outputs: Record<string, string> | null = null;
+
+      for (const prop of element.properties) {
+        if (!t.isObjectProperty(prop) || !t.isIdentifier(prop.key)) continue;
+
+        switch (prop.key.name) {
+          case 'directive':
+            if (t.isIdentifier(prop.value)) {
+              directive = prop.value.name;
+            }
+            break;
+          case 'inputs':
+            inputs = parseHostDirectiveMapping(prop.value);
+            break;
+          case 'outputs':
+            outputs = parseHostDirectiveMapping(prop.value);
+            break;
+        }
+      }
+
+      if (directive) {
+        const modulePath = importMap.get(directive);
+        if (modulePath) {
+          result.push({directive, modulePath, inputs, outputs});
+        }
+      }
+    }
+  }
+
+  return result.length > 0 ? result : null;
+}
+
+/**
+ * Parses host directive input/output mappings.
+ * Handles arrays like ['inputName', 'inputName: publicName']
+ */
+function parseHostDirectiveMapping(node: t.Node): Record<string, string> | null {
+  if (!t.isArrayExpression(node)) return null;
+
+  const result: Record<string, string> = {};
+
+  for (const element of node.elements) {
+    if (!element) continue;
+
+    const value = extractStringValue(element);
+    if (value) {
+      const parts = value.split(':').map((s) => s.trim());
+      const bindingName = parts[0];
+      const publicName = parts[1] || bindingName;
+      result[publicName] = bindingName;
+    }
+  }
+
+  return Object.keys(result).length > 0 ? result : null;
 }
