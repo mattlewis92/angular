@@ -214,18 +214,6 @@ function transformAndEmitWithBabel(
 
   // Transform the AST using proper Babel path methods
   traverse(ast, {
-    // Handle @angular/core imports
-    // Keep original imports when we have decorator args (needed for setClassMetadata).
-    // Remove them only when not generating metadata, to avoid unused imports.
-    ImportDeclaration(path: NodePath<t.ImportDeclaration>) {
-      if (path.node.source.value === '@angular/core' && path.node.loc) {
-        // Keep the import if we're generating setClassMetadata (it uses the named imports)
-        if (!decoratorArgsNode) {
-          path.remove();
-        }
-      }
-    },
-
     // Find and transform the target class
     ClassDeclaration(path: NodePath<t.ClassDeclaration>) {
       if (path.node.id?.name !== className) {
@@ -285,12 +273,28 @@ function transformAndEmitWithBabel(
       classBody.pushContainer('body', cmpProperty);
     },
 
-    // Add imports and additional statements at the beginning, debug info and HMR at the end
+    // Add imports at the beginning, additional statements after existing imports
     Program: {
       exit(path: NodePath<t.Program>) {
-        const nodesToPrepend = [...newImportDeclarations, ...additionalStatements];
-        if (nodesToPrepend.length > 0) {
-          path.unshiftContainer('body', nodesToPrepend);
+        // Add new import declarations at the top
+        if (newImportDeclarations.length > 0) {
+          path.unshiftContainer('body', newImportDeclarations);
+        }
+
+        // Find the position after all import declarations to insert additional statements
+        if (additionalStatements.length > 0) {
+          const body = path.get('body');
+          let lastImportIndex = -1;
+          for (let i = 0; i < body.length; i++) {
+            if (body[i].isImportDeclaration()) {
+              lastImportIndex = i;
+            }
+          }
+          // Insert additional statements after the last import (or at the beginning if no imports)
+          const insertIndex = lastImportIndex + 1;
+          for (let i = additionalStatements.length - 1; i >= 0; i--) {
+            body[insertIndex].insertBefore(additionalStatements[i]);
+          }
         }
 
         // Add setClassMetadata IIFE after the class (before debug info)

@@ -486,6 +486,16 @@ export class BabelBackedTranslator implements o.ExpressionVisitor, o.StatementVi
 
     const moduleImports = this.imports.get(moduleName)!;
 
+    // For @angular/core, always use namespace import (i0) to match Angular compiler output
+    if (moduleName === '@angular/core' && symbolName !== null) {
+      // Ensure we have a namespace import for @angular/core
+      if (!moduleImports.has(null)) {
+        moduleImports.set(null, 'i0');
+      }
+      // Return member expression: i0.symbolName
+      return t.memberExpression(t.identifier('i0'), t.identifier(symbolName));
+    }
+
     if (!moduleImports.has(symbolName)) {
       if (symbolName === null) {
         moduleImports.set(symbolName, `_i${this.importCounter++}`);
