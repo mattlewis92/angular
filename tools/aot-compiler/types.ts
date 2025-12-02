@@ -62,6 +62,12 @@ export interface CompiledClassData {
   resources?: ResolvedResources;
   /** File paths read to resolve defer block dependencies (only for components) */
   deferResolvedFilePaths?: string[];
+  /** The compiled injector expression (only for NgModule - ɵinj) */
+  injectorExpr?: import('@angular/compiler').Expression;
+  /** The static property name for the injector (only for NgModule - 'ɵinj') */
+  injectorName?: string;
+  /** Side-effect statements like setNgModuleScope (only for NgModule) */
+  sideEffectStatements?: import('@angular/compiler').Statement[];
 }
 
 /**
@@ -278,13 +284,53 @@ export interface ParsedHostBindings {
 }
 
 /**
- * Metadata for an imported dependency in @Component.imports.
+ * Metadata for an imported dependency in @Component.imports or @NgModule arrays.
  */
 export interface ImportMetadata {
   /** The local identifier name (e.g., 'ChildComponent') */
   name: string;
   /** The module path from the import statement (e.g., './child.component') */
   modulePath: string;
+}
+
+/**
+ * Valid schema types for NgModule.schemas.
+ */
+export type SchemaType = 'CUSTOM_ELEMENTS_SCHEMA' | 'NO_ERRORS_SCHEMA';
+
+/**
+ * Metadata extracted from the @NgModule decorator.
+ */
+export interface ExtractedNgModuleMetadata {
+  /** The class name of the NgModule */
+  className: string;
+  /** Location of the class identifier for source span */
+  classLocation: {line: number; column: number} | null;
+  /** Number of generic type parameters on the class */
+  typeArgumentCount: number;
+  /** The class body source code (without decorator) */
+  classBody: string;
+  /** The decorator arguments Babel AST node (for setClassMetadata) */
+  decoratorArgsNode: t.ObjectExpression | null;
+
+  // NgModule decorator fields
+  /** Components, directives, and pipes declared by this module */
+  declarations: ImportMetadata[];
+  /** Modules whose exported directives/pipes should be available to templates in this module */
+  imports: ImportMetadata[];
+  /** Components, directives, pipes, and modules that can be used by other modules that import this one */
+  exports: ImportMetadata[];
+  /** Components to bootstrap when this module is bootstrapped */
+  bootstrap: ImportMetadata[];
+  /** Providers array expression (kept as raw AST, not resolved) */
+  providers: t.Expression | null;
+  /** Schema definitions (CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA) */
+  schemas: SchemaType[];
+  /** Module ID expression */
+  id: t.Expression | null;
+
+  /** True if any array contains forwardRef() wrappers */
+  containsForwardDecls: boolean;
 }
 
 /**

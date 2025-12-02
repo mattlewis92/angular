@@ -228,6 +228,13 @@ async function main(): Promise<void> {
   );
   allPassed = allPassed && fullDirResult;
 
+  // Test full metadata NgModule (comprehensive NgModule metadata extraction)
+  const moduleResult = await testComponent(
+    path.join(testDir, 'full-metadata.module.ts'),
+    'Full Metadata NgModule',
+  );
+  allPassed = allPassed && moduleResult;
+
   if (!allPassed) {
     process.exit(1);
   }

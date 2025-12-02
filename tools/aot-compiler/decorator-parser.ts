@@ -6,11 +6,13 @@ import * as t from '@babel/types';
 import {
   ExtractedComponentMetadata,
   ExtractedDirectiveMetadata,
+  ExtractedNgModuleMetadata,
   HostDirectiveMetadata,
   ImportMetadata,
   InputMetadata,
   ParsedHostBindings,
   QueryMetadata,
+  SchemaType,
 } from './types';
 
 /**
@@ -109,6 +111,279 @@ function findDirectiveDecorator(node: t.ClassDeclaration): t.CallExpression | nu
     }
   }
   return null;
+}
+
+/**
+ * Parses all @NgModule decorators from a pre-parsed Babel AST and extracts metadata.
+ *
+ * @param ast The Babel AST (from @babel/parser)
+ * @param sourceCode The original source code (for extracting class body text)
+ * @returns Array of extracted NgModule metadata for all @NgModule decorators found
+ */
+export function parseNgModuleDecorators(
+  ast: ParseResult<t.File>,
+  sourceCode: string,
+): ExtractedNgModuleMetadata[] {
+  const results: ExtractedNgModuleMetadata[] = [];
+
+  // Build a map of imported identifiers to their module paths
+  const importMap = buildImportMap(ast);
+
+  // Walk the AST to find all classes with @NgModule decorator
+  traverse(ast, {
+    ClassDeclaration(path: NodePath<t.ClassDeclaration>) {
+      if (!path.node.id) return;
+
+      const ngModuleDecorator = findNgModuleDecorator(path.node);
+      if (ngModuleDecorator) {
+        results.push(
+          extractNgModuleMetadata(
+            path.node.id.name,
+            ngModuleDecorator,
+            path.node,
+            sourceCode,
+            importMap,
+          ),
+        );
+      }
+    },
+  });
+
+  return results;
+}
+
+/**
+ * Finds the @NgModule decorator on a class declaration.
+ */
+function findNgModuleDecorator(node: t.ClassDeclaration): t.CallExpression | null {
+  const decorators = node.decorators;
+  if (!decorators) return null;
+
+  for (const decorator of decorators) {
+    if (t.isCallExpression(decorator.expression)) {
+      const callExpr = decorator.expression;
+      // Check for direct @NgModule call
+      if (t.isIdentifier(callExpr.callee) && callExpr.callee.name === 'NgModule') {
+        return callExpr;
+      }
+      // Check for namespaced @angular/core.NgModule or ng.NgModule
+      if (t.isMemberExpression(callExpr.callee) && t.isIdentifier(callExpr.callee.property)) {
+        if (callExpr.callee.property.name === 'NgModule') {
+          return callExpr;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Extracts metadata from the @NgModule decorator call expression.
+ */
+function extractNgModuleMetadata(
+  className: string,
+  decorator: t.CallExpression,
+  classDecl: t.ClassDeclaration,
+  sourceCode: string,
+  importMap: Map<string, string>,
+): ExtractedNgModuleMetadata {
+  // Extract class body - get the content between the class braces
+  const classBody = extractClassBody(classDecl, sourceCode);
+
+  // Extract class-level metadata
+  const typeArgumentCount = getTypeArgumentCount(classDecl);
+  const classLocation = getClassLocation(classDecl);
+
+  const metadata: ExtractedNgModuleMetadata = {
+    className,
+    classLocation,
+    typeArgumentCount,
+    classBody,
+    decoratorArgsNode: null,
+    declarations: [],
+    imports: [],
+    exports: [],
+    bootstrap: [],
+    providers: null,
+    schemas: [],
+    id: null,
+    containsForwardDecls: false,
+  };
+
+  if (decorator.arguments.length === 0) return metadata;
+
+  const arg = decorator.arguments[0];
+  if (!t.isObjectExpression(arg)) return metadata;
+
+  // Store the decorator arguments node for setClassMetadata generation
+  metadata.decoratorArgsNode = arg;
+
+  // Track if any array contains forwardRef
+  let hasForwardRef = false;
+
+  for (const prop of arg.properties) {
+    if (t.isObjectProperty(prop) && t.isIdentifier(prop.key)) {
+      const name = prop.key.name;
+      const value = prop.value;
+
+      switch (name) {
+        case 'declarations': {
+          const result = extractReferenceArray(value, importMap);
+          metadata.declarations = result.imports;
+          hasForwardRef = hasForwardRef || result.hasForwardRef;
+          break;
+        }
+        case 'imports': {
+          const result = extractReferenceArray(value, importMap);
+          metadata.imports = result.imports;
+          hasForwardRef = hasForwardRef || result.hasForwardRef;
+          break;
+        }
+        case 'exports': {
+          const result = extractReferenceArray(value, importMap);
+          metadata.exports = result.imports;
+          hasForwardRef = hasForwardRef || result.hasForwardRef;
+          break;
+        }
+        case 'bootstrap': {
+          const result = extractReferenceArray(value, importMap);
+          metadata.bootstrap = result.imports;
+          hasForwardRef = hasForwardRef || result.hasForwardRef;
+          break;
+        }
+        case 'providers':
+          if (t.isExpression(value)) {
+            metadata.providers = value;
+          }
+          break;
+        case 'schemas':
+          metadata.schemas = extractSchemas(value);
+          break;
+        case 'id':
+          if (t.isExpression(value)) {
+            metadata.id = value;
+          }
+          break;
+      }
+    }
+  }
+
+  metadata.containsForwardDecls = hasForwardRef;
+
+  return metadata;
+}
+
+/**
+ * Extracts an array of references from a decorator property value.
+ * Handles both direct identifiers and forwardRef() wrappers.
+ *
+ * @param node The AST node to extract from (expected to be an array expression)
+ * @param importMap Map of identifier names to their module paths
+ * @returns The extracted imports and whether any forwardRef wrappers were found
+ */
+function extractReferenceArray(
+  node: t.Node,
+  importMap: Map<string, string>,
+): {imports: ImportMetadata[]; hasForwardRef: boolean} {
+  const result: ImportMetadata[] = [];
+  let hasForwardRef = false;
+
+  if (t.isArrayExpression(node)) {
+    for (const element of node.elements) {
+      if (!element) continue;
+
+      // Handle direct identifier reference: [ChildComponent]
+      if (t.isIdentifier(element)) {
+        const name = element.name;
+        const modulePath = importMap.get(name);
+        if (modulePath) {
+          result.push({name, modulePath});
+        }
+        continue;
+      }
+
+      // Handle forwardRef(() => ChildComponent)
+      const unwrapped = unwrapForwardRef(element);
+      if (unwrapped && t.isIdentifier(unwrapped)) {
+        hasForwardRef = true;
+        const name = unwrapped.name;
+        const modulePath = importMap.get(name);
+        if (modulePath) {
+          result.push({name, modulePath});
+        }
+      }
+    }
+  }
+
+  return {imports: result, hasForwardRef};
+}
+
+/**
+ * Unwraps a forwardRef(() => Class) call expression and returns the inner class reference.
+ *
+ * @param node The AST node to check
+ * @returns The unwrapped identifier or null if not a forwardRef call
+ */
+function unwrapForwardRef(node: t.Node): t.Node | null {
+  // Check for forwardRef(() => Class) pattern
+  if (
+    t.isCallExpression(node) &&
+    t.isIdentifier(node.callee) &&
+    node.callee.name === 'forwardRef' &&
+    node.arguments.length === 1
+  ) {
+    const arg = node.arguments[0];
+
+    // Arrow function: forwardRef(() => Class)
+    if (t.isArrowFunctionExpression(arg) && t.isExpression(arg.body)) {
+      return arg.body;
+    }
+
+    // Regular function: forwardRef(function() { return Class; })
+    if (t.isFunctionExpression(arg) && arg.body.body.length === 1) {
+      const stmt = arg.body.body[0];
+      if (t.isReturnStatement(stmt) && stmt.argument) {
+        return stmt.argument;
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Extracts schema types from the schemas array.
+ *
+ * @param node The AST node (expected to be an array of schema identifiers)
+ * @returns Array of schema type strings
+ */
+function extractSchemas(node: t.Node): SchemaType[] {
+  const schemas: SchemaType[] = [];
+
+  if (t.isArrayExpression(node)) {
+    for (const element of node.elements) {
+      if (!element) continue;
+
+      // Handle direct identifier: CUSTOM_ELEMENTS_SCHEMA
+      if (t.isIdentifier(element)) {
+        if (element.name === 'CUSTOM_ELEMENTS_SCHEMA' || element.name === 'NO_ERRORS_SCHEMA') {
+          schemas.push(element.name as SchemaType);
+        }
+      }
+
+      // Handle member expression: core.CUSTOM_ELEMENTS_SCHEMA
+      if (t.isMemberExpression(element) && t.isIdentifier(element.property)) {
+        if (
+          element.property.name === 'CUSTOM_ELEMENTS_SCHEMA' ||
+          element.property.name === 'NO_ERRORS_SCHEMA'
+        ) {
+          schemas.push(element.property.name as SchemaType);
+        }
+      }
+    }
+  }
+
+  return schemas;
 }
 
 /**

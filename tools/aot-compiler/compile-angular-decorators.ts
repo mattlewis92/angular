@@ -1,11 +1,16 @@
 import {ConstantPool} from '@angular/compiler';
 
 import {
+  collectDependencies,
   compileSingleComponent,
   compileSingleDirective,
-  collectDependencies,
+  compileSingleNgModule,
 } from './compile-class-from-metadata';
-import {parseComponentDecorators, parseDirectiveDecorators} from './decorator-parser';
+import {
+  parseComponentDecorators,
+  parseDirectiveDecorators,
+  parseNgModuleDecorators,
+} from './decorator-parser';
 import {transformAndEmitWithBabel} from './transform-and-emit-with-babel';
 import {CompilationResult, CompiledClassData, CompileComponentOptions} from './types';
 import {parseSource} from './ast-utils';
@@ -14,12 +19,12 @@ import {defaultReadFile} from './file-utils';
 /**
  * Compiles all Angular decorators in a TypeScript file to JavaScript.
  *
- * This function parses all @Component and @Directive decorators from the TypeScript source,
- * resolves external templates and styles, and compiles each using Angular's compiler APIs.
- * It outputs JavaScript code with source map support.
+ * This function parses all @Component, @Directive, and @NgModule decorators from the
+ * TypeScript source, resolves external templates and styles, and compiles each using
+ * Angular's compiler APIs. It outputs JavaScript code with source map support.
  *
- * Currently supports @Component and @Directive decorators. Future versions will support
- * @Pipe, @Injectable, and @NgModule.
+ * Currently supports @Component, @Directive, and @NgModule decorators. Future versions
+ * will support @Pipe and @Injectable.
  *
  * @param fileContents The TypeScript source code to compile
  * @param filePath Absolute path to the TypeScript file (for source maps and resolving imports)
@@ -44,6 +49,7 @@ export async function compileAngularDecorators(
   // 2. Extract decorator metadata from the AST
   const extractedComponents = parseComponentDecorators(ast, sourceCode);
   const extractedDirectives = parseDirectiveDecorators(ast, sourceCode);
+  const extractedNgModules = parseNgModuleDecorators(ast, sourceCode);
 
   // 3. Compile all decorated classes
   const compiledClasses: CompiledClassData[] = [];
@@ -61,6 +67,11 @@ export async function compileAngularDecorators(
 
   for (const extracted of extractedDirectives) {
     compiledClasses.push(compileSingleDirective(extracted, absolutePath, constantPool));
+  }
+
+  // NgModules are synchronous (no template resolution needed)
+  for (const extracted of extractedNgModules) {
+    compiledClasses.push(compileSingleNgModule(extracted, absolutePath));
   }
 
   // 4. Transform AST and emit JavaScript with source maps

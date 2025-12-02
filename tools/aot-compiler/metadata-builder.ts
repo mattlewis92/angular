@@ -15,8 +15,12 @@ import {
   R3ComponentMetadata,
   R3DirectiveMetadata,
   R3HostMetadata,
+  R3InjectorMetadata,
   R3InputMetadata,
+  R3NgModuleMetadata,
+  R3NgModuleMetadataKind,
   R3Reference,
+  R3SelectorScopeMode,
   R3TemplateDependency,
   ReadVarExpr,
   RecursiveAstVisitor,
@@ -37,12 +41,14 @@ import * as path from 'path';
 import {
   ExtractedComponentMetadata,
   ExtractedDirectiveMetadata,
+  ExtractedNgModuleMetadata,
   HostDirectiveMetadata,
   ImportMetadata,
   InputMetadata,
   ParsedHostBindings,
   QueryMetadata,
   ResolvedResources,
+  SchemaType,
 } from './types';
 
 /**
@@ -939,4 +945,91 @@ function createDeferDependencyExpression(deps: ImportMetadata[]): o.Expression {
     const thenCall = promiseAll.prop('then').callFn([thenCallback]);
     return new o.ArrowFunctionExpr([], thenCall);
   }
+}
+
+// =============================================================================
+// NgModule Metadata Builders
+// =============================================================================
+
+/**
+ * Builds the R3NgModuleMetadata structure from extracted decorator metadata.
+ *
+ * @param extracted The metadata extracted from the @NgModule decorator
+ * @param sourceFilePath The path to the source file (for source maps)
+ * @returns The R3NgModuleMetadata ready for compilation
+ */
+export function buildR3NgModuleMetadata(
+  extracted: ExtractedNgModuleMetadata,
+  sourceFilePath: string,
+): R3NgModuleMetadata {
+  const type = createR3Reference(extracted.className);
+
+  return {
+    kind: R3NgModuleMetadataKind.Global,
+    type,
+    bootstrap: extracted.bootstrap.map((imp) => importToR3Reference(imp)),
+    declarations: extracted.declarations.map((imp) => importToR3Reference(imp)),
+    imports: extracted.imports.map((imp) => importToR3Reference(imp)),
+    exports: extracted.exports.map((imp) => importToR3Reference(imp)),
+    publicDeclarationTypes: null,
+    includeImportTypes: true,
+    containsForwardDecls: extracted.containsForwardDecls,
+    id: extracted.id ? new o.WrappedNodeExpr(extracted.id) : null,
+    selectorScopeMode: R3SelectorScopeMode.SideEffect,
+    schemas: extracted.schemas.map((schema) => schemaToR3Reference(schema)),
+  };
+}
+
+/**
+ * Builds the R3InjectorMetadata structure from extracted NgModule metadata.
+ *
+ * @param extracted The metadata extracted from the @NgModule decorator
+ * @returns The R3InjectorMetadata ready for compilation
+ */
+export function buildR3InjectorMetadata(extracted: ExtractedNgModuleMetadata): R3InjectorMetadata {
+  const type = createR3Reference(extracted.className);
+
+  // Imports for injector include both NgModule imports and exports
+  // Both can contribute to dependency injection
+  const injectorImports: o.Expression[] = [
+    ...extracted.imports.map((imp) => new ReadVarExpr(imp.name)),
+    ...extracted.exports.map((imp) => new ReadVarExpr(imp.name)),
+  ];
+
+  return {
+    name: extracted.className,
+    type,
+    providers: extracted.providers ? new o.WrappedNodeExpr(extracted.providers) : null,
+    imports: injectorImports,
+  };
+}
+
+/**
+ * Creates an R3Reference for a class name.
+ */
+function createR3Reference(className: string): R3Reference {
+  return {
+    value: new ReadVarExpr(className),
+    type: new ReadVarExpr(className),
+  };
+}
+
+/**
+ * Converts ImportMetadata to R3Reference.
+ */
+function importToR3Reference(imp: ImportMetadata): R3Reference {
+  return {
+    value: new ReadVarExpr(imp.name),
+    type: new ReadVarExpr(imp.name),
+  };
+}
+
+/**
+ * Converts a schema type string to R3Reference.
+ */
+function schemaToR3Reference(schema: SchemaType): R3Reference {
+  return {
+    value: new ReadVarExpr(schema),
+    type: new ReadVarExpr(schema),
+  };
 }

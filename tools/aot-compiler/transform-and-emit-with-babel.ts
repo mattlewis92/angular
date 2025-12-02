@@ -71,7 +71,14 @@ export function transformAndEmitWithBabel(
   }
 
   // Process each compiled class and build transformation data
-  const classTransforms = new Map<string, ClassTransformData>();
+  const classTransforms = new Map<
+    string,
+    ClassTransformData & {
+      injectorExpr?: t.Expression;
+      injectorName?: string;
+      sideEffectStatements?: t.Statement[];
+    }
+  >();
 
   for (const compiled of compiledClasses) {
     const {className, decoratorType, definitionExpr, definitionName, decoratorArgsNode, resources} =
@@ -112,6 +119,23 @@ export function transformAndEmitWithBabel(
       hmrInitializerStmt = t.expressionStatement(translatedHmrInit);
     }
 
+    // For NgModules: translate injector expression and side-effect statements
+    let injectorExpr: t.Expression | undefined;
+    let injectorName: string | undefined;
+    let sideEffectStatements: t.Statement[] | undefined;
+
+    if (decoratorType === 'NgModule') {
+      if (compiled.injectorExpr) {
+        injectorExpr = translator.translateExpression(compiled.injectorExpr);
+        injectorName = compiled.injectorName;
+      }
+      if (compiled.sideEffectStatements && compiled.sideEffectStatements.length > 0) {
+        sideEffectStatements = compiled.sideEffectStatements.map((stmt) =>
+          translator.translateStatement(stmt),
+        );
+      }
+    }
+
     classTransforms.set(className, {
       className,
       decoratorType,
@@ -122,6 +146,10 @@ export function transformAndEmitWithBabel(
       hmrInitializerStmt,
       classLineNumber,
       resources,
+      // NgModule-specific
+      injectorExpr,
+      injectorName,
+      sideEffectStatements,
     });
   }
 
@@ -223,6 +251,20 @@ export function transformAndEmitWithBabel(
         const classBody = path.get('body');
         classBody.pushContainer('body', factoryStaticBlock);
         classBody.pushContainer('body', defStaticBlock);
+
+        // For NgModule: add ɵinj static block for injector definition
+        if (classData.injectorExpr && classData.injectorName) {
+          const injStaticBlock = t.staticBlock([
+            t.expressionStatement(
+              t.assignmentExpression(
+                '=',
+                t.memberExpression(t.thisExpression(), t.identifier(classData.injectorName)),
+                classData.injectorExpr,
+              ),
+            ),
+          ]);
+          classBody.pushContainer('body', injStaticBlock);
+        }
       },
 
       // Add new imports after existing imports, additional statements after all imports
@@ -286,6 +328,13 @@ export function transformAndEmitWithBabel(
             // Add HMR initializer (only for components)
             if (transformData.hmrInitializerStmt) {
               path.pushContainer('body', transformData.hmrInitializerStmt);
+            }
+
+            // Add side-effect statements (NgModule setNgModuleScope calls)
+            if (transformData.sideEffectStatements) {
+              for (const stmt of transformData.sideEffectStatements) {
+                path.pushContainer('body', stmt);
+              }
             }
           }
         },

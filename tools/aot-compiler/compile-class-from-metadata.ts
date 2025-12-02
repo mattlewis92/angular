@@ -1,16 +1,24 @@
 import {
   compileComponentFromMetadata,
   compileDirectiveFromMetadata,
+  compileInjector,
+  compileNgModule,
   ConstantPool,
   makeBindingParser,
 } from '@angular/compiler';
 
-import {buildR3ComponentMetadata, buildR3DirectiveMetadata} from './metadata-builder';
+import {
+  buildR3ComponentMetadata,
+  buildR3DirectiveMetadata,
+  buildR3InjectorMetadata,
+  buildR3NgModuleMetadata,
+} from './metadata-builder';
 import {
   CompiledClassData,
   DEFINITION_NAMES,
   ExtractedComponentMetadata,
   ExtractedDirectiveMetadata,
+  ExtractedNgModuleMetadata,
   ResolvedResources,
 } from './types';
 import path from 'node:path';
@@ -126,4 +134,39 @@ export function collectDependencies(compiled: CompiledClassData): string[] {
     dependencies.push(...compiled.deferResolvedFilePaths);
   }
   return dependencies;
+}
+
+/**
+ * Compiles a single extracted NgModule and returns the compiled data.
+ *
+ * NgModules generate two definitions:
+ * - ɵmod (module definition) from compileNgModule
+ * - ɵinj (injector definition) from compileInjector
+ */
+export function compileSingleNgModule(
+  extracted: ExtractedNgModuleMetadata,
+  absolutePath: string,
+): CompiledClassData {
+  // Build R3 metadata structures
+  const ngModuleMeta = buildR3NgModuleMetadata(extracted, absolutePath);
+  const injectorMeta = buildR3InjectorMetadata(extracted);
+
+  // Compile NgModule definition
+  const ngModuleResult = compileNgModule(ngModuleMeta);
+
+  // Compile Injector definition
+  const injectorResult = compileInjector(injectorMeta);
+
+  return {
+    className: extracted.className,
+    decoratorType: 'NgModule',
+    definitionExpr: ngModuleResult.expression,
+    definitionName: DEFINITION_NAMES.NgModule, // 'ɵmod'
+    decoratorArgsNode: extracted.decoratorArgsNode,
+    deferredImportNames: new Set(),
+    // NgModule-specific fields
+    injectorExpr: injectorResult.expression,
+    injectorName: 'ɵinj',
+    sideEffectStatements: ngModuleResult.statements,
+  };
 }
