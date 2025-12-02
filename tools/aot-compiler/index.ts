@@ -110,14 +110,10 @@ interface ParsedFile {
 }
 
 /**
- * Parses a TypeScript file and returns the AST and source code.
+ * Parses TypeScript source code and returns the AST.
  */
-async function parseFile(
-  filePath: string,
-  readFile: (path: string) => Promise<string> = defaultReadFile,
-): Promise<ParsedFile> {
+function parseSource(sourceCode: string, filePath: string): ParsedFile {
   const absolutePath = path.resolve(filePath);
-  const sourceCode = await readFile(absolutePath);
   const ast = parse(sourceCode, {
     ...BABEL_PARSER_OPTIONS,
     sourceFilename: absolutePath,
@@ -244,11 +240,13 @@ function collectNamedImports(ast: ParseResult<t.File>): string[] {
  * Currently supports @Component and @Directive decorators. Future versions will support
  * @Pipe, @Injectable, and @NgModule.
  *
- * @param filePath Absolute path to the TypeScript file
+ * @param fileContents The TypeScript source code to compile
+ * @param filePath Absolute path to the TypeScript file (for source maps and resolving imports)
  * @param options Compilation options
  * @returns The compilation result with JavaScript code and source map
  */
 export async function compileAngularDecorators(
+  fileContents: string,
   filePath: string,
   options: CompileComponentOptions = {},
 ): Promise<CompilationResult> {
@@ -260,7 +258,7 @@ export async function compileAngularDecorators(
   } = options;
 
   // 1. Parse the source file
-  const {ast, sourceCode, absolutePath} = await parseFile(filePath, readFile);
+  const {ast, sourceCode, absolutePath} = parseSource(fileContents, filePath);
 
   // 2. Extract decorator metadata from the AST
   const extractedComponents = parseComponentDecorators(ast, sourceCode);
@@ -314,12 +312,14 @@ export async function compileAngularDecorators(
  * It should be called separately from `compileAngularDecorators` when HMR update
  * code is needed for a specific component.
  *
- * @param filePath Absolute path to the TypeScript file
+ * @param fileContents The TypeScript source code
+ * @param filePath Absolute path to the TypeScript file (for source maps and resolving imports)
  * @param className The name of the component class to generate HMR update code for
  * @param options Compilation options
  * @returns The HMR update module code and dependencies
  */
 export async function compileHmrUpdateCode(
+  fileContents: string,
   filePath: string,
   className: string,
   options: CompileComponentOptions = {},
@@ -327,7 +327,7 @@ export async function compileHmrUpdateCode(
   const {readFile = defaultReadFile, babelPlugins = []} = options;
 
   // 1. Parse the source file
-  const {ast, sourceCode, absolutePath} = await parseFile(filePath, readFile);
+  const {ast, sourceCode, absolutePath} = parseSource(fileContents, filePath);
 
   // 2. Extract all component decorators and find the target
   const extractedComponents = parseComponentDecorators(ast, sourceCode);
@@ -980,7 +980,8 @@ if (require.main === module) {
 
   (async () => {
     try {
-      const result = await compileAngularDecorators(filePath);
+      const fileContents = await fs.promises.readFile(filePath, 'utf-8');
+      const result = await compileAngularDecorators(fileContents, filePath);
 
       // Output the compiled code with source map comment
       // tslint:disable-next-line:no-console

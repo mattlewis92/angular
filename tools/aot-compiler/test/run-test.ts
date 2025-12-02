@@ -109,10 +109,13 @@ async function testComponent(componentPath: string, name: string): Promise<boole
   // tslint:disable-next-line:no-console
   console.log(`${colors.cyan}=== Testing ${name} ===${colors.reset}\n`);
 
+  // Read file contents
+  const fileContents = fs.readFileSync(componentPath, 'utf-8');
+
   // Compile with our AOT compiler
   let aotResult;
   try {
-    aotResult = await compileAngularDecorators(componentPath, {enableHmr: true});
+    aotResult = await compileAngularDecorators(fileContents, componentPath, {enableHmr: true});
   } catch (error) {
     // tslint:disable-next-line:no-console
     console.error(
@@ -155,7 +158,7 @@ async function testComponent(componentPath: string, name: string): Promise<boole
   if (classNames.length > 0) {
     // For single-component files, compare against the expected HMR file
     if (classNames.length === 1 && expectedHmr) {
-      const hmrResult = await compileHmrUpdateCode(componentPath, classNames[0]);
+      const hmrResult = await compileHmrUpdateCode(fileContents, componentPath, classNames[0]);
       if (hmrResult.code) {
         const [formattedExpected, formattedActual] = await Promise.all([
           formatCode(expectedHmr),
@@ -171,7 +174,7 @@ async function testComponent(componentPath: string, name: string): Promise<boole
       // tslint:disable-next-line:no-console
       console.log(`${colors.dim}Create: ${expectedHmrPath}${colors.reset}\n`);
       for (const className of classNames) {
-        const hmrResult = await compileHmrUpdateCode(componentPath, className);
+        const hmrResult = await compileHmrUpdateCode(fileContents, componentPath, className);
         if (hmrResult.code) {
           // tslint:disable-next-line:no-console
           console.log(`${colors.cyan}HMR Update Code (${className}):${colors.reset}\n`);
