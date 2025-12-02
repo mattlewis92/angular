@@ -1,0 +1,137 @@
+/**
+ * @license
+ * Copyright Google LLC All Rights Reserved.
+ *
+ * Use of this source code is governed by an MIT-style license that can be
+ * found in the LICENSE file at https://angular.dev/license
+ */
+
+import {
+  compileComponentFromMetadata,
+  compileDirectiveFromMetadata,
+  ConstantPool,
+  makeBindingParser,
+} from '@angular/compiler';
+
+import {buildR3ComponentMetadata, buildR3DirectiveMetadata} from './metadata-builder';
+import {
+  CompiledClassData,
+  DEFINITION_NAMES,
+  ExtractedComponentMetadata,
+  ExtractedDirectiveMetadata,
+  ResolvedResources,
+} from './types';
+import path from 'node:path';
+
+/**
+ * Compiles a single extracted component and returns the compiled data.
+ */
+export async function compileSingleComponent(
+  extracted: ExtractedComponentMetadata,
+  absolutePath: string,
+  readFile: (path: string) => Promise<string>,
+  constantPool: ConstantPool,
+  enableHmr: boolean,
+): Promise<CompiledClassData> {
+  const resources = await resolveTemplateAndStyles(extracted, absolutePath, readFile);
+  const {metadata, deferredImportNames, deferResolvedFilePaths} = await buildR3ComponentMetadata(
+    extracted,
+    resources,
+    absolutePath,
+    enableHmr,
+    readFile,
+  );
+  const bindingParser = makeBindingParser(metadata.interpolation);
+  const compiledComponent = compileComponentFromMetadata(metadata, constantPool, bindingParser);
+
+  return {
+    className: extracted.className,
+    decoratorType: 'Component',
+    definitionExpr: compiledComponent.expression,
+    definitionName: DEFINITION_NAMES.Component,
+    decoratorArgsNode: extracted.decoratorArgsNode,
+    deferredImportNames,
+    resources,
+    deferResolvedFilePaths,
+  };
+}
+
+/**
+ * Compiles a single extracted directive and returns the compiled data.
+ */
+export function compileSingleDirective(
+  extracted: ExtractedDirectiveMetadata,
+  absolutePath: string,
+  constantPool: ConstantPool,
+): CompiledClassData {
+  const metadata = buildR3DirectiveMetadata(extracted, absolutePath);
+  const bindingParser = makeBindingParser();
+  const compiledDirective = compileDirectiveFromMetadata(metadata, constantPool, bindingParser);
+
+  return {
+    className: extracted.className,
+    decoratorType: 'Directive',
+    definitionExpr: compiledDirective.expression,
+    definitionName: DEFINITION_NAMES.Directive,
+    decoratorArgsNode: extracted.decoratorArgsNode,
+    deferredImportNames: new Set(),
+  };
+}
+
+/**
+ * Resolves external template and style files.
+ */
+export async function resolveTemplateAndStyles(
+  metadata: ExtractedComponentMetadata,
+  componentFilePath: string,
+  readFile: (path: string) => Promise<string>,
+): Promise<ResolvedResources> {
+  const componentDir = path.dirname(componentFilePath);
+
+  // Resolve template
+  let template = metadata.template;
+  let templateUrl = `ng:///${metadata.className}/template.html`;
+
+  if (!template && metadata.templateUrl) {
+    const templatePath = path.resolve(componentDir, metadata.templateUrl);
+    template = await readFile(templatePath);
+    templateUrl = templatePath;
+  }
+
+  if (!template) {
+    throw new Error('Component must have either template or templateUrl');
+  }
+
+  // Resolve styles
+  const styles = [...metadata.styles];
+  const styleUrls: string[] = [];
+
+  for (const styleUrl of metadata.styleUrls) {
+    const stylePath = path.resolve(componentDir, styleUrl);
+    styles.push(await readFile(stylePath));
+    styleUrls.push(stylePath);
+  }
+
+  return {template, templateUrl, styles, styleUrls};
+}
+
+/**
+ * Collects file dependencies from compiled class data.
+ * Returns paths to external templates, styles, and defer block dependency files.
+ */
+export function collectDependencies(compiled: CompiledClassData): string[] {
+  const dependencies: string[] = [];
+  // Add external template URL (if it's an actual file path, not a ng:/// URL)
+  if (compiled.resources?.templateUrl && !compiled.resources.templateUrl.startsWith('ng:///')) {
+    dependencies.push(compiled.resources.templateUrl);
+  }
+  // Add external style URLs
+  if (compiled.resources?.styleUrls) {
+    dependencies.push(...compiled.resources.styleUrls);
+  }
+  // Add defer block dependency files
+  if (compiled.deferResolvedFilePaths) {
+    dependencies.push(...compiled.deferResolvedFilePaths);
+  }
+  return dependencies;
+}

@@ -8,9 +8,85 @@
 
 import {ChangeDetectionStrategy, SourceMap, ViewEncapsulation} from '@angular/compiler';
 import type {PluginItem} from '@babel/core';
+import type {ParseResult} from '@babel/parser';
 import type * as t from '@babel/types';
 
 export type {PluginItem} from '@babel/core';
+
+/**
+ * Supported Angular decorator types for compilation.
+ */
+export type DecoratorType = 'Component' | 'Directive' | 'Pipe' | 'Injectable' | 'NgModule';
+
+/**
+ * Maps decorator types to their definition property names.
+ */
+export const DEFINITION_NAMES: Record<DecoratorType, string> = {
+  Component: 'ɵcmp',
+  Directive: 'ɵdir',
+  Pipe: 'ɵpipe',
+  Injectable: 'ɵprov',
+  NgModule: 'ɵmod',
+};
+
+/** Babel parser options for TypeScript with decorators */
+export const BABEL_PARSER_OPTIONS = {
+  sourceType: 'module' as const,
+  plugins: [
+    'typescript' as const,
+    'decorators-legacy' as const,
+    'classProperties' as const,
+    'classPrivateProperties' as const,
+    'classPrivateMethods' as const,
+  ],
+};
+
+/**
+ * Result of parsing a TypeScript file.
+ */
+export interface ParsedFile {
+  ast: ParseResult<t.File>;
+  sourceCode: string;
+  absolutePath: string;
+}
+
+/**
+ * Internal structure to hold compiled class data before AST transformation.
+ * Works for all decorator types (Component, Directive, Pipe, Injectable, NgModule).
+ */
+export interface CompiledClassData {
+  className: string;
+  /** The decorator type that was compiled */
+  decoratorType: DecoratorType;
+  /** The compiled definition expression (ɵcmp, ɵdir, ɵpipe, ɵprov, ɵmod) */
+  definitionExpr: import('@angular/compiler').Expression;
+  /** The static property name for the definition (ɵcmp, ɵdir, ɵpipe, ɵprov, ɵmod) */
+  definitionName: string;
+  /** The decorator arguments node for setClassMetadata */
+  decoratorArgsNode: t.ObjectExpression | null;
+  /** Names of imports that are deferred (only for components) */
+  deferredImportNames: Set<string>;
+  /** Resolved template/styles (only for components) */
+  resources?: ResolvedResources;
+  /** File paths read to resolve defer block dependencies (only for components) */
+  deferResolvedFilePaths?: string[];
+}
+
+/**
+ * Internal structure to hold per-class transformation data.
+ * Works for all decorator types.
+ */
+export interface ClassTransformData {
+  className: string;
+  decoratorType: DecoratorType;
+  definitionExpr: t.Expression;
+  definitionName: string;
+  debugInfoStmt: t.Statement;
+  classMetadataStmt: t.Statement | null;
+  hmrInitializerStmt: t.Statement | null;
+  classLineNumber: number;
+  resources?: ResolvedResources;
+}
 
 /**
  * Angular decorator types that can be compiled.
