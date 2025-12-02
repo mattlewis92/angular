@@ -14,6 +14,8 @@ import {
   ImportMetadata,
   InputMetadata,
   MaybeForwardRef,
+  ModelMetadata,
+  OutputMetadata,
   ParsedHostBindings,
   QueryMetadata,
   SchemaType,
@@ -435,6 +437,7 @@ function parseDependency(node: t.Node, importMap: Map<string, string>): Dependen
       self: false,
       skipSelf: false,
       host: false,
+      attribute: null,
     };
   }
 
@@ -492,7 +495,7 @@ function parseDependency(node: t.Node, importMap: Map<string, string>): Dependen
     }
 
     if (token) {
-      return {token, optional, self, skipSelf, host};
+      return {token, optional, self, skipSelf, host, attribute: null};
     }
   }
 
@@ -793,23 +796,41 @@ function extractDirectiveMetadata(
   const classLocation = getClassLocation(classDecl);
   const usesOnChanges = detectUsesOnChanges(classDecl);
   const usesInheritance = detectUsesInheritance(classDecl);
-  const {queries, viewQueries} = extractQueries(classDecl);
+  const {queries: decoratorQueries, viewQueries: decoratorViewQueries} = extractQueries(classDecl);
   const signalInputs = extractSignalInputs(classDecl);
+  const signalOutputs = extractSignalOutputs(classDecl);
+  const models = extractModelInputs(classDecl);
+  const signalQueries = extractSignalQueries(classDecl);
+
+  // Extract host binding and listener decorators from class members
+  const hostBindingDecorators = extractHostBindingDecorators(classDecl);
+  const hostListenerDecorators = extractHostListenerDecorators(classDecl);
+
+  // Merge decorator queries with signal queries
+  const allViewQueries = [...decoratorViewQueries, ...signalQueries.view];
+  const allContentQueries = [...decoratorQueries, ...signalQueries.content];
 
   const metadata: ExtractedDirectiveMetadata = {
     className,
     selector: null,
     standalone: true, // Default in modern Angular
-    hostBindings: {listeners: {}, properties: {}, attributes: {}, specialAttributes: {}},
+    hostBindings: {
+      listeners: {...hostListenerDecorators},
+      properties: {...hostBindingDecorators.properties},
+      attributes: {...hostBindingDecorators.attributes},
+      specialAttributes: {},
+    },
     host: {}, // Deprecated, kept for compatibility
     inputs: {...signalInputs}, // Start with signal inputs, decorator inputs will be merged
     outputs: {},
+    signalOutputs,
+    models,
     classBody,
     decoratorArgsNode: null,
     typeArgumentCount,
     classLocation,
-    viewQueries,
-    queries,
+    viewQueries: allViewQueries,
+    queries: allContentQueries,
     exportAs: null,
     usesOnChanges,
     usesInheritance,
@@ -840,7 +861,17 @@ function extractDirectiveMetadata(
           break;
         case 'host': {
           const parsed = extractParsedHostBindings(value);
-          metadata.hostBindings = parsed;
+          // Merge decorator host object with @HostBinding/@HostListener decorators
+          // Decorator object properties take precedence over @HostBinding/@HostListener
+          metadata.hostBindings = {
+            listeners: {...metadata.hostBindings.listeners, ...parsed.listeners},
+            properties: {...metadata.hostBindings.properties, ...parsed.properties},
+            attributes: {...metadata.hostBindings.attributes, ...parsed.attributes},
+            specialAttributes: {
+              ...metadata.hostBindings.specialAttributes,
+              ...parsed.specialAttributes,
+            },
+          };
           metadata.host = extractHostBindings(value); // Keep deprecated field populated
           break;
         }
@@ -946,8 +977,19 @@ function extractMetadata(
   const classLocation = getClassLocation(classDecl);
   const usesOnChanges = detectUsesOnChanges(classDecl);
   const usesInheritance = detectUsesInheritance(classDecl);
-  const {queries, viewQueries} = extractQueries(classDecl);
+  const {queries: decoratorQueries, viewQueries: decoratorViewQueries} = extractQueries(classDecl);
   const signalInputs = extractSignalInputs(classDecl);
+  const signalOutputs = extractSignalOutputs(classDecl);
+  const models = extractModelInputs(classDecl);
+  const signalQueries = extractSignalQueries(classDecl);
+
+  // Extract host binding and listener decorators from class members
+  const hostBindingDecorators = extractHostBindingDecorators(classDecl);
+  const hostListenerDecorators = extractHostListenerDecorators(classDecl);
+
+  // Merge decorator queries with signal queries
+  const allViewQueries = [...decoratorViewQueries, ...signalQueries.view];
+  const allContentQueries = [...decoratorQueries, ...signalQueries.content];
 
   const metadata: ExtractedComponentMetadata = {
     className,
@@ -961,10 +1003,17 @@ function extractMetadata(
     standalone: true, // Default in modern Angular
     preserveWhitespaces: false,
     interpolation: null,
-    hostBindings: {listeners: {}, properties: {}, attributes: {}, specialAttributes: {}},
+    hostBindings: {
+      listeners: {...hostListenerDecorators},
+      properties: {...hostBindingDecorators.properties},
+      attributes: {...hostBindingDecorators.attributes},
+      specialAttributes: {},
+    },
     host: {}, // Deprecated, kept for compatibility
     inputs: {...signalInputs}, // Start with signal inputs, decorator inputs will be merged
     outputs: {},
+    signalOutputs,
+    models,
     imports: [],
     classBody,
     decoratorArgsNode: null,
@@ -972,8 +1021,8 @@ function extractMetadata(
     // New fields
     typeArgumentCount,
     classLocation,
-    viewQueries,
-    queries,
+    viewQueries: allViewQueries,
+    queries: allContentQueries,
     exportAs: null,
     usesOnChanges,
     usesInheritance,
@@ -1037,7 +1086,17 @@ function extractMetadata(
           break;
         case 'host': {
           const parsed = extractParsedHostBindings(value);
-          metadata.hostBindings = parsed;
+          // Merge decorator host object with @HostBinding/@HostListener decorators
+          // Decorator object properties take precedence over @HostBinding/@HostListener
+          metadata.hostBindings = {
+            listeners: {...metadata.hostBindings.listeners, ...parsed.listeners},
+            properties: {...metadata.hostBindings.properties, ...parsed.properties},
+            attributes: {...metadata.hostBindings.attributes, ...parsed.attributes},
+            specialAttributes: {
+              ...metadata.hostBindings.specialAttributes,
+              ...parsed.specialAttributes,
+            },
+          };
           metadata.host = extractHostBindings(value); // Keep deprecated field populated
           break;
         }
@@ -1618,6 +1677,460 @@ function extractSignalInputs(classDecl: t.ClassDeclaration): Record<string, Inpu
   }
 
   return result;
+}
+
+/**
+ * Extracts signal-based outputs from class properties.
+ * Detects output() calls.
+ */
+function extractSignalOutputs(classDecl: t.ClassDeclaration): OutputMetadata[] {
+  const result: OutputMetadata[] = [];
+
+  for (const member of classDecl.body.body) {
+    if (!t.isClassProperty(member)) continue;
+    if (!t.isIdentifier(member.key)) continue;
+    if (!member.value || !t.isCallExpression(member.value)) continue;
+
+    const callee = member.value.callee;
+
+    // Check for output() call
+    if (!t.isIdentifier(callee) || callee.name !== 'output') continue;
+
+    const propName = member.key.name;
+    let alias = propName;
+
+    // Check for options argument with alias
+    const args = member.value.arguments;
+    const optionsArg = args[0];
+    if (optionsArg && t.isObjectExpression(optionsArg)) {
+      for (const prop of optionsArg.properties) {
+        if (t.isObjectProperty(prop) && t.isIdentifier(prop.key) && prop.key.name === 'alias') {
+          alias = extractStringValue(prop.value) || propName;
+        }
+      }
+    }
+
+    result.push({
+      classPropertyName: propName,
+      bindingPropertyName: alias,
+      isSignal: false, // Outputs are NOT signal-based themselves
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Extracts model inputs from class properties.
+ * Detects model() and model.required() calls.
+ * Models create both an input and output binding.
+ */
+function extractModelInputs(classDecl: t.ClassDeclaration): ModelMetadata[] {
+  const result: ModelMetadata[] = [];
+
+  for (const member of classDecl.body.body) {
+    if (!t.isClassProperty(member)) continue;
+    if (!t.isIdentifier(member.key)) continue;
+    if (!member.value || !t.isCallExpression(member.value)) continue;
+
+    const callee = member.value.callee;
+    let isModelCall = false;
+    let isRequired = false;
+
+    // Check for model() call
+    if (t.isIdentifier(callee) && callee.name === 'model') {
+      isModelCall = true;
+    }
+
+    // Check for model.required() call
+    if (
+      t.isMemberExpression(callee) &&
+      t.isIdentifier(callee.object) &&
+      callee.object.name === 'model' &&
+      t.isIdentifier(callee.property) &&
+      callee.property.name === 'required'
+    ) {
+      isModelCall = true;
+      isRequired = true;
+    }
+
+    if (!isModelCall) continue;
+
+    const propName = member.key.name;
+    let alias = propName;
+
+    // Check for options argument with alias
+    const args = member.value.arguments;
+    // For model.required(), first arg is options; for model(), check both positions
+    // model(initialValue, options) or model(options) when no initial value
+    let optionsArg: t.Expression | undefined;
+    if (isRequired) {
+      optionsArg = args[0] as t.Expression;
+    } else {
+      // For model(), options can be first arg (if it's an object with alias/transform)
+      // or second arg (if first arg is the initial value)
+      const firstArg = args[0] as t.Expression;
+      const secondArg = args[1] as t.Expression;
+      if (secondArg && t.isObjectExpression(secondArg)) {
+        optionsArg = secondArg;
+      } else if (firstArg && t.isObjectExpression(firstArg)) {
+        // Check if it's an options object (has alias key) vs initial value
+        const hasAlias = firstArg.properties.some(
+          (p) => t.isObjectProperty(p) && t.isIdentifier(p.key) && p.key.name === 'alias',
+        );
+        if (hasAlias) {
+          optionsArg = firstArg;
+        }
+      }
+    }
+
+    if (optionsArg && t.isObjectExpression(optionsArg)) {
+      for (const prop of optionsArg.properties) {
+        if (t.isObjectProperty(prop) && t.isIdentifier(prop.key) && prop.key.name === 'alias') {
+          alias = extractStringValue(prop.value) || propName;
+        }
+      }
+    }
+
+    result.push({
+      classPropertyName: propName,
+      bindingPropertyName: alias,
+      required: isRequired,
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Extracts signal-based queries from class properties.
+ * Detects viewChild(), viewChild.required(), viewChildren(),
+ * contentChild(), contentChild.required(), contentChildren() calls.
+ * Returns separate arrays for view and content queries.
+ */
+function extractSignalQueries(classDecl: t.ClassDeclaration): {
+  view: QueryMetadata[];
+  content: QueryMetadata[];
+} {
+  const viewQueries: QueryMetadata[] = [];
+  const contentQueries: QueryMetadata[] = [];
+
+  const queryFunctions = new Map<string, {isView: boolean; isSingle: boolean}>([
+    ['viewChild', {isView: true, isSingle: true}],
+    ['viewChildren', {isView: true, isSingle: false}],
+    ['contentChild', {isView: false, isSingle: true}],
+    ['contentChildren', {isView: false, isSingle: false}],
+  ]);
+
+  for (const member of classDecl.body.body) {
+    if (!t.isClassProperty(member)) continue;
+    if (!t.isIdentifier(member.key)) continue;
+    if (!member.value || !t.isCallExpression(member.value)) continue;
+
+    const callee = member.value.callee;
+    let queryType: {isView: boolean; isSingle: boolean} | undefined;
+    let isRequired = false;
+    let functionName: string | undefined;
+
+    // Check for direct call: viewChild('ref'), contentChildren(MyComp)
+    if (t.isIdentifier(callee)) {
+      functionName = callee.name;
+      queryType = queryFunctions.get(functionName);
+    }
+
+    // Check for .required() call: viewChild.required('ref'), contentChild.required(MyComp)
+    if (
+      t.isMemberExpression(callee) &&
+      t.isIdentifier(callee.object) &&
+      t.isIdentifier(callee.property) &&
+      callee.property.name === 'required'
+    ) {
+      functionName = callee.object.name;
+      queryType = queryFunctions.get(functionName);
+      if (queryType) {
+        isRequired = true;
+      }
+    }
+
+    if (!queryType) continue;
+
+    const propName = member.key.name;
+    const args = member.value.arguments;
+
+    // First argument is the locator (required)
+    const locatorArg = args[0];
+    if (!locatorArg) continue;
+
+    let predicate: string | string[];
+    let isForwardRef = false;
+
+    // Handle different locator types
+    if (t.isStringLiteral(locatorArg)) {
+      // Template reference: viewChild('myRef')
+      predicate = locatorArg.value;
+    } else if (t.isIdentifier(locatorArg)) {
+      // Class reference: viewChild(MyComponent)
+      predicate = locatorArg.name;
+    } else if (
+      t.isCallExpression(locatorArg) &&
+      t.isIdentifier(locatorArg.callee) &&
+      locatorArg.callee.name === 'forwardRef'
+    ) {
+      // forwardRef wrapped: viewChild(forwardRef(() => MyComponent))
+      isForwardRef = true;
+      const forwardRefArg = locatorArg.arguments[0];
+      if (t.isArrowFunctionExpression(forwardRefArg) && t.isIdentifier(forwardRefArg.body)) {
+        predicate = forwardRefArg.body.name;
+      } else {
+        continue; // Can't extract predicate
+      }
+    } else {
+      continue; // Unsupported locator type
+    }
+
+    // Extract options from second argument
+    let read: string | null = null;
+    let descendants = queryType.isSingle ? true : false; // Single queries default to true, multi to false
+
+    const optionsArg = args[1];
+    if (optionsArg && t.isObjectExpression(optionsArg)) {
+      for (const prop of optionsArg.properties) {
+        if (!t.isObjectProperty(prop) || !t.isIdentifier(prop.key)) continue;
+
+        switch (prop.key.name) {
+          case 'read':
+            if (t.isIdentifier(prop.value)) {
+              read = prop.value.name;
+            }
+            break;
+          case 'descendants':
+            descendants = extractBooleanValue(prop.value) ?? descendants;
+            break;
+        }
+      }
+    }
+
+    const queryMetadata: QueryMetadata = {
+      propertyName: propName,
+      predicate,
+      first: queryType.isSingle,
+      read,
+      static: false, // Signal queries are always dynamic
+      descendants,
+      isSignal: true,
+      isForwardRef,
+    };
+
+    // Add to appropriate array based on query type
+    if (queryType.isView) {
+      viewQueries.push(queryMetadata);
+    } else {
+      contentQueries.push(queryMetadata);
+    }
+  }
+
+  return {view: viewQueries, content: contentQueries};
+}
+
+/**
+ * Extracts @HostBinding decorators from class properties.
+ */
+function extractHostBindingDecorators(classDecl: t.ClassDeclaration): {
+  properties: Record<string, string>;
+  attributes: Record<string, string>;
+} {
+  const properties: Record<string, string> = {};
+  const attributes: Record<string, string> = {};
+
+  for (const member of classDecl.body.body) {
+    if (!t.isClassProperty(member) && !t.isClassAccessorProperty(member)) continue;
+    if (!t.isIdentifier(member.key)) continue;
+    if (!member.decorators) continue;
+
+    const propName = member.key.name;
+
+    for (const decorator of member.decorators) {
+      if (!t.isDecorator(decorator)) continue;
+      if (!t.isCallExpression(decorator.expression)) continue;
+      if (!t.isIdentifier(decorator.expression.callee)) continue;
+      if (decorator.expression.callee.name !== 'HostBinding') continue;
+
+      // Get the binding target from decorator argument
+      const arg = decorator.expression.arguments[0];
+      if (!arg || !t.isStringLiteral(arg)) continue;
+
+      const bindingTarget = arg.value;
+
+      // Determine if this is a property or attribute binding
+      if (bindingTarget.startsWith('attr.')) {
+        // Attribute binding: @HostBinding('attr.role') -> [attr.role]="propName"
+        attributes[bindingTarget] = propName;
+      } else {
+        // Property binding: @HostBinding('class.active') -> [class.active]="propName"
+        properties[`[${bindingTarget}]`] = propName;
+      }
+    }
+  }
+
+  return {properties, attributes};
+}
+
+/**
+ * Extracts @HostListener decorators from class methods.
+ */
+function extractHostListenerDecorators(classDecl: t.ClassDeclaration): Record<string, string> {
+  const listeners: Record<string, string> = {};
+
+  for (const member of classDecl.body.body) {
+    if (!t.isClassMethod(member)) continue;
+    if (!t.isIdentifier(member.key)) continue;
+    if (!member.decorators) continue;
+
+    const methodName = member.key.name;
+
+    for (const decorator of member.decorators) {
+      if (!t.isDecorator(decorator)) continue;
+      if (!t.isCallExpression(decorator.expression)) continue;
+      if (!t.isIdentifier(decorator.expression.callee)) continue;
+      if (decorator.expression.callee.name !== 'HostListener') continue;
+
+      // Get the event name from first argument
+      const eventArg = decorator.expression.arguments[0];
+      if (!eventArg || !t.isStringLiteral(eventArg)) continue;
+
+      const eventName = eventArg.value;
+
+      // Get optional args array from second argument
+      const argsArg = decorator.expression.arguments[1];
+      let argsString = '';
+      if (argsArg && t.isArrayExpression(argsArg)) {
+        const argStrings = argsArg.elements
+          .filter((el): el is t.StringLiteral => t.isStringLiteral(el))
+          .map((el) => el.value);
+        if (argStrings.length > 0) {
+          argsString = argStrings.join(', ');
+        }
+      }
+
+      // Build the handler expression
+      const handlerExpr = argsString ? `${methodName}(${argsString})` : `${methodName}()`;
+
+      // Store as (eventName)="handler(args)"
+      listeners[`(${eventName})`] = handlerExpr;
+    }
+  }
+
+  return listeners;
+}
+
+/**
+ * Extracts constructor parameter dependencies with their DI decorators.
+ * Handles @Inject, @Optional, @Self, @SkipSelf, @Host, and @Attribute.
+ */
+export function extractConstructorDependencies(
+  classDecl: t.ClassDeclaration,
+): DependencyMetadata[] {
+  const dependencies: DependencyMetadata[] = [];
+
+  // Find the constructor method
+  for (const member of classDecl.body.body) {
+    if (!t.isClassMethod(member) || member.kind !== 'constructor') continue;
+
+    // Parse each parameter
+    for (const param of member.params) {
+      let paramNode: t.Identifier | t.TSParameterProperty | null = null;
+      let paramDecorators: t.Decorator[] = [];
+
+      // Handle TSParameterProperty (constructor parameter property)
+      if (t.isTSParameterProperty(param)) {
+        paramDecorators = (param.decorators as t.Decorator[]) || [];
+        if (t.isIdentifier(param.parameter)) {
+          paramNode = param.parameter;
+        } else if (t.isAssignmentPattern(param.parameter) && t.isIdentifier(param.parameter.left)) {
+          paramNode = param.parameter.left;
+        }
+      } else if (t.isIdentifier(param)) {
+        paramNode = param;
+        paramDecorators = (param.decorators as t.Decorator[]) || [];
+      } else if (t.isAssignmentPattern(param) && t.isIdentifier(param.left)) {
+        paramNode = param.left;
+        paramDecorators = (param.decorators as t.Decorator[]) || [];
+      }
+
+      if (!paramNode) continue;
+
+      // Initialize dependency metadata
+      let token: t.Expression = paramNode;
+      let optional = false;
+      let self = false;
+      let skipSelf = false;
+      let host = false;
+      let attribute: string | null = null;
+
+      // Process decorators on this parameter
+      for (const decorator of paramDecorators) {
+        if (!t.isDecorator(decorator)) continue;
+        const expr = decorator.expression;
+
+        // Handle @Inject(TOKEN)
+        if (t.isCallExpression(expr) && t.isIdentifier(expr.callee)) {
+          const decoratorName = expr.callee.name;
+
+          switch (decoratorName) {
+            case 'Inject':
+              if (expr.arguments.length > 0 && t.isExpression(expr.arguments[0])) {
+                token = expr.arguments[0] as t.Expression;
+              }
+              break;
+            case 'Attribute':
+              if (expr.arguments.length > 0 && t.isStringLiteral(expr.arguments[0])) {
+                attribute = expr.arguments[0].value;
+              }
+              break;
+            case 'Optional':
+              optional = true;
+              break;
+            case 'Self':
+              self = true;
+              break;
+            case 'SkipSelf':
+              skipSelf = true;
+              break;
+            case 'Host':
+              host = true;
+              break;
+          }
+        }
+      }
+
+      // Get the type annotation as token if no @Inject was used and we have a type
+      if (paramNode === token && paramNode.typeAnnotation) {
+        const typeAnnotation = paramNode.typeAnnotation;
+        if (
+          t.isTSTypeAnnotation(typeAnnotation) &&
+          t.isTSTypeReference(typeAnnotation.typeAnnotation) &&
+          t.isIdentifier(typeAnnotation.typeAnnotation.typeName)
+        ) {
+          // Use the type name as the token
+          token = t.identifier(typeAnnotation.typeAnnotation.typeName.name);
+        }
+      }
+
+      dependencies.push({
+        token,
+        optional,
+        self,
+        skipSelf,
+        host,
+        attribute,
+      });
+    }
+
+    // Only process the first constructor found
+    break;
+  }
+
+  return dependencies;
 }
 
 /**

@@ -161,8 +161,12 @@ export interface ExtractedDirectiveMetadata {
   hostBindings: ParsedHostBindings;
   /** Directive/component inputs (from decorator and class properties) */
   inputs: Record<string, InputMetadata>;
-  /** Directive/component outputs */
+  /** Directive/component outputs (from decorator @Output or outputs array) */
   outputs: Record<string, string>;
+  /** Signal-based outputs from output() calls */
+  signalOutputs: OutputMetadata[];
+  /** Model declarations from model() calls - each generates both input and output */
+  models: ModelMetadata[];
   /** The class body source code (without decorator) */
   classBody: string;
   /** The decorator arguments Babel AST node (for setClassMetadata) */
@@ -235,6 +239,32 @@ export interface InputMetadata {
   isSignal: boolean;
   /** Transform function expression (for @Input({ transform: fn })) */
   transform: t.Expression | null;
+}
+
+/**
+ * Metadata for a component/directive output.
+ * Used for both decorator-based @Output and signal-based output().
+ */
+export interface OutputMetadata {
+  /** The class property name */
+  classPropertyName: string;
+  /** The binding property name (public name, may differ if aliased) */
+  bindingPropertyName: string;
+  /** Whether this is from a signal-based output() call (always false - outputs are not signals) */
+  isSignal: boolean;
+}
+
+/**
+ * Metadata for a model() declaration.
+ * Models create both an input and output binding.
+ */
+export interface ModelMetadata {
+  /** The class property name */
+  classPropertyName: string;
+  /** The binding property name for the input (may be aliased) */
+  bindingPropertyName: string;
+  /** Whether the model is required (model.required()) */
+  required: boolean;
 }
 
 /**
@@ -376,7 +406,7 @@ export interface ResolvedResources {
 }
 
 /**
- * Metadata for a dependency in the deps array of @Injectable.
+ * Metadata for a dependency in the deps array of @Injectable or constructor parameters.
  */
 export interface DependencyMetadata {
   /** The injection token expression */
@@ -389,6 +419,8 @@ export interface DependencyMetadata {
   skipSelf: boolean;
   /** Whether the dependency has @Host() decorator */
   host: boolean;
+  /** The attribute name if @Attribute() decorator is used, null otherwise */
+  attribute: string | null;
 }
 
 /**

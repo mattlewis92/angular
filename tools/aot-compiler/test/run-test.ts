@@ -249,6 +249,27 @@ async function main(): Promise<void> {
   );
   allPassed = allPassed && injectableResult;
 
+  // Test signal features (output, model, viewChild, contentChild, etc.)
+  const signalResult = await testComponent(
+    path.join(testDir, 'signal-features.component.ts'),
+    'Signal Features Component',
+  );
+  allPassed = allPassed && signalResult;
+
+  // Test host decorators (@HostBinding, @HostListener)
+  const hostDecResult = await testComponent(
+    path.join(testDir, 'host-decorators.component.ts'),
+    'Host Decorators Component',
+  );
+  allPassed = allPassed && hostDecResult;
+
+  // Test constructor DI (@Inject, @Optional, @Self, @SkipSelf, @Host, @Attribute)
+  const diResult = await testComponent(
+    path.join(testDir, 'constructor-di.component.ts'),
+    'Constructor DI Component',
+  );
+  allPassed = allPassed && diResult;
+
   if (!allPassed) {
     process.exit(1);
   }
