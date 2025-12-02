@@ -1,33 +1,16 @@
-import {Component, ElementRef, forwardRef, QueryList, TemplateRef} from '@angular/core';
-
-// Signal-based APIs (these would come from @angular/core in real usage)
-declare function output<T = void>(options?: {alias?: string}): any;
-declare function model<T>(initialValue?: T, options?: {alias?: string}): any;
-declare namespace model {
-  function required<T>(options?: {alias?: string}): any;
-}
-declare function viewChild<T>(
-  locator: string | any,
-  options?: {read?: any; descendants?: boolean},
-): any;
-declare namespace viewChild {
-  function required<T>(locator: string | any, options?: {read?: any; descendants?: boolean}): any;
-}
-declare function viewChildren<T>(
-  locator: string | any,
-  options?: {read?: any; descendants?: boolean},
-): any;
-declare function contentChild<T>(
-  locator: string | any,
-  options?: {read?: any; descendants?: boolean},
-): any;
-declare namespace contentChild {
-  function required<T>(locator: string | any, options?: {read?: any; descendants?: boolean}): any;
-}
-declare function contentChildren<T>(
-  locator: string | any,
-  options?: {read?: any; descendants?: boolean},
-): any;
+import {
+  Component,
+  ElementRef,
+  forwardRef,
+  TemplateRef,
+  input,
+  output,
+  model,
+  viewChild,
+  viewChildren,
+  contentChild,
+  contentChildren,
+} from '@angular/core';
 
 /**
  * Child component for query testing.
@@ -56,6 +39,12 @@ export class SignalChildComponent {}
   imports: [SignalChildComponent],
 })
 export class SignalFeaturesComponent {
+  // Signal inputs
+  name = input<string>();
+  requiredAge = input.required<number>();
+  aliasedInput = input<string>(undefined, {alias: 'externalName'});
+  inputWithDefault = input('defaultValue');
+
   // Signal outputs
   clicked = output();
   valueChanged = output<string>();
@@ -64,7 +53,7 @@ export class SignalFeaturesComponent {
   // Model inputs (generate input + output)
   value = model<string>();
   requiredValue = model.required<number>();
-  aliasedModel = model<boolean>({alias: 'extModel'});
+  aliasedModel = model<boolean>(false, {alias: 'extModel'});
 
   // Signal queries - view
   container = viewChild<ElementRef>('container');
