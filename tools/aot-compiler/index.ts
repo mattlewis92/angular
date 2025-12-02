@@ -36,6 +36,7 @@ import {
   CompileComponentOptions,
   ExtractedComponentMetadata,
   ExtractedDirectiveMetadata,
+  HmrCompilationResult,
   ResolvedResources,
 } from './types';
 
@@ -46,6 +47,7 @@ export {
   CompileComponentOptions,
   ExtractedComponentMetadata,
   ExtractedDirectiveMetadata,
+  HmrCompilationResult,
 } from './types';
 
 /**
@@ -154,6 +156,27 @@ function compileSingleComponent(
     resources,
     deferResolvedFilePaths,
   };
+}
+
+/**
+ * Collects file dependencies from compiled class data.
+ * Returns paths to external templates, styles, and defer block dependency files.
+ */
+function collectDependencies(compiled: CompiledClassData): string[] {
+  const dependencies: string[] = [];
+  // Add external template URL (if it's an actual file path, not a ng:/// URL)
+  if (compiled.resources?.templateUrl && !compiled.resources.templateUrl.startsWith('ng:///')) {
+    dependencies.push(compiled.resources.templateUrl);
+  }
+  // Add external style URLs
+  if (compiled.resources?.styleUrls) {
+    dependencies.push(...compiled.resources.styleUrls);
+  }
+  // Add defer block dependency files
+  if (compiled.deferResolvedFilePaths) {
+    dependencies.push(...compiled.deferResolvedFilePaths);
+  }
+  return dependencies;
 }
 
 /**
@@ -279,22 +302,7 @@ export function compileAngularDecorators(
     .map((c) => c.className);
 
   // 5. Collect all file dependencies
-  const dependencies: string[] = [];
-  for (const compiled of compiledClasses) {
-    // Add external template URL (if it's an actual file path, not a ng:/// URL)
-    if (compiled.resources?.templateUrl && !compiled.resources.templateUrl.startsWith('ng:///')) {
-      dependencies.push(compiled.resources.templateUrl);
-    }
-    // Add external style URLs
-    if (compiled.resources?.styleUrls) {
-      dependencies.push(...compiled.resources.styleUrls);
-    }
-    // Add defer block dependency files
-    if (compiled.deferResolvedFilePaths) {
-      dependencies.push(...compiled.deferResolvedFilePaths);
-    }
-  }
-  result.dependencies = dependencies;
+  result.dependencies = compiledClasses.flatMap(collectDependencies);
 
   return result;
 }
@@ -309,13 +317,13 @@ export function compileAngularDecorators(
  * @param filePath Absolute path to the TypeScript file
  * @param className The name of the component class to generate HMR update code for
  * @param options Compilation options
- * @returns The HMR update module code, or null if the component was not found
+ * @returns The HMR update module code and dependencies
  */
 export function compileHmrUpdateCode(
   filePath: string,
   className: string,
   options: CompileComponentOptions = {},
-): string {
+): HmrCompilationResult {
   const {readFile = defaultReadFile, babelPlugins = []} = options;
 
   // 1. Parse the source file
@@ -353,7 +361,7 @@ export function compileHmrUpdateCode(
 
   const hmrMeta = buildHmrMetadata(className, absolutePath, translator, namedImports);
 
-  return generateHmrUpdateModule(
+  const code = generateHmrUpdateModule(
     className,
     constantPool,
     compiled.definitionExpr,
@@ -362,6 +370,9 @@ export function compileHmrUpdateCode(
     classLineNumber,
     babelPlugins,
   );
+
+  // 6. Collect dependencies
+  return {code, dependencies: collectDependencies(compiled)};
 }
 
 /**

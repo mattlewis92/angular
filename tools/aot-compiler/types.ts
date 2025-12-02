@@ -42,6 +42,22 @@ export interface CompilationResult {
 }
 
 /**
+ * Result of compiling HMR update code for a component.
+ */
+export interface HmrCompilationResult {
+  /** The compiled HMR update module code */
+  code: string;
+  /**
+   * File paths of all dependencies read during compilation.
+   * These are files that can affect the compilation result:
+   * - External template files (templateUrl)
+   * - External style files (styleUrls)
+   * - Files read to resolve defer block dependencies
+   */
+  dependencies: string[];
+}
+
+/**
  * Options for the component compiler.
  */
 export interface CompileComponentOptions {

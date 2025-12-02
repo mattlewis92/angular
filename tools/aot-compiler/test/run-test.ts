@@ -155,11 +155,11 @@ async function testComponent(componentPath: string, name: string): Promise<boole
   if (classNames.length > 0) {
     // For single-component files, compare against the expected HMR file
     if (classNames.length === 1 && expectedHmr) {
-      const hmrCode = compileHmrUpdateCode(componentPath, classNames[0]);
-      if (hmrCode) {
+      const hmrResult = compileHmrUpdateCode(componentPath, classNames[0]);
+      if (hmrResult.code) {
         const [formattedExpected, formattedActual] = await Promise.all([
           formatCode(expectedHmr),
-          formatCode(hmrCode),
+          formatCode(hmrResult.code),
         ]);
         const matches = showDiff(formattedExpected, formattedActual, `${name} - HMR Update`);
         allMatched = allMatched && matches;
@@ -171,11 +171,11 @@ async function testComponent(componentPath: string, name: string): Promise<boole
       // tslint:disable-next-line:no-console
       console.log(`${colors.dim}Create: ${expectedHmrPath}${colors.reset}\n`);
       for (const className of classNames) {
-        const hmrCode = compileHmrUpdateCode(componentPath, className);
-        if (hmrCode) {
+        const hmrResult = compileHmrUpdateCode(componentPath, className);
+        if (hmrResult.code) {
           // tslint:disable-next-line:no-console
           console.log(`${colors.cyan}HMR Update Code (${className}):${colors.reset}\n`);
-          const formattedHmr = await formatCode(hmrCode);
+          const formattedHmr = await formatCode(hmrResult.code);
           // tslint:disable-next-line:no-console
           console.log(formattedHmr);
         }
