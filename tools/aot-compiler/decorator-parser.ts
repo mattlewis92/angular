@@ -7,6 +7,7 @@ import {
   ExtractedComponentMetadata,
   ExtractedDirectiveMetadata,
   ExtractedNgModuleMetadata,
+  ExtractedPipeMetadata,
   HostDirectiveMetadata,
   ImportMetadata,
   InputMetadata,
@@ -175,6 +176,126 @@ function findNgModuleDecorator(node: t.ClassDeclaration): t.CallExpression | nul
     }
   }
   return null;
+}
+
+/**
+ * Parses all @Pipe decorators from a pre-parsed Babel AST and extracts metadata.
+ *
+ * @param ast The Babel AST (from @babel/parser)
+ * @param sourceCode The original source code (unused for pipes, kept for consistency)
+ * @returns Array of extracted pipe metadata for all @Pipe decorators found
+ */
+export function parsePipeDecorators(
+  ast: ParseResult<t.File>,
+  sourceCode: string,
+): ExtractedPipeMetadata[] {
+  const results: ExtractedPipeMetadata[] = [];
+
+  // Walk the AST to find all classes with @Pipe decorator
+  traverse(ast, {
+    ClassDeclaration(path: NodePath<t.ClassDeclaration>) {
+      if (!path.node.id) return;
+
+      const pipeDecorator = findPipeDecorator(path.node);
+      if (pipeDecorator) {
+        results.push(extractPipeMetadata(path.node.id.name, pipeDecorator, path.node));
+      }
+    },
+  });
+
+  return results;
+}
+
+/**
+ * Finds the @Pipe decorator on a class declaration.
+ */
+function findPipeDecorator(node: t.ClassDeclaration): t.CallExpression | null {
+  const decorators = node.decorators;
+  if (!decorators) return null;
+
+  for (const decorator of decorators) {
+    if (t.isCallExpression(decorator.expression)) {
+      const callExpr = decorator.expression;
+      // Check for direct @Pipe call
+      if (t.isIdentifier(callExpr.callee) && callExpr.callee.name === 'Pipe') {
+        return callExpr;
+      }
+      // Check for namespaced @angular/core.Pipe or ng.Pipe
+      if (t.isMemberExpression(callExpr.callee) && t.isIdentifier(callExpr.callee.property)) {
+        if (callExpr.callee.property.name === 'Pipe') {
+          return callExpr;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Extracts metadata from the @Pipe decorator call expression.
+ */
+function extractPipeMetadata(
+  className: string,
+  decorator: t.CallExpression,
+  classDecl: t.ClassDeclaration,
+): ExtractedPipeMetadata {
+  // Extract class-level metadata
+  const typeArgumentCount = getTypeArgumentCount(classDecl);
+  const classLocation = getClassLocation(classDecl);
+
+  const metadata: ExtractedPipeMetadata = {
+    className,
+    classLocation,
+    typeArgumentCount,
+    decoratorArgsNode: null,
+    // Pipe-specific defaults
+    pipeName: '', // Required, will be set from decorator
+    pure: true, // Default in Angular
+    standalone: true, // Default in modern Angular
+  };
+
+  if (decorator.arguments.length === 0) {
+    throw new Error(`${className}: @Pipe decorator requires a name property`);
+  }
+
+  const arg = decorator.arguments[0];
+  if (!t.isObjectExpression(arg)) {
+    throw new Error(`${className}: @Pipe decorator requires an object argument`);
+  }
+
+  // Store the decorator arguments node for setClassMetadata generation
+  metadata.decoratorArgsNode = arg;
+
+  for (const prop of arg.properties) {
+    if (t.isObjectProperty(prop) && t.isIdentifier(prop.key)) {
+      const name = prop.key.name;
+      const value = prop.value;
+
+      switch (name) {
+        case 'name': {
+          const pipeName = extractStringValue(value);
+          if (!pipeName) {
+            throw new Error(`${className}: @Pipe decorator 'name' must be a string`);
+          }
+          metadata.pipeName = pipeName;
+          break;
+        }
+        case 'pure':
+          metadata.pure = extractBooleanValue(value) ?? true;
+          break;
+        case 'standalone':
+          metadata.standalone = extractBooleanValue(value) ?? true;
+          break;
+      }
+    }
+  }
+
+  // Validate required field
+  if (!metadata.pipeName) {
+    throw new Error(`${className}: @Pipe decorator requires a 'name' property`);
+  }
+
+  return metadata;
 }
 
 /**

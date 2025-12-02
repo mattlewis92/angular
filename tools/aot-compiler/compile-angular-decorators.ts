@@ -5,11 +5,13 @@ import {
   compileSingleComponent,
   compileSingleDirective,
   compileSingleNgModule,
+  compileSinglePipe,
 } from './compile-class-from-metadata';
 import {
   parseComponentDecorators,
   parseDirectiveDecorators,
   parseNgModuleDecorators,
+  parsePipeDecorators,
 } from './decorator-parser';
 import {transformAndEmitWithBabel} from './transform-and-emit-with-babel';
 import {CompilationResult, CompiledClassData, CompileComponentOptions} from './types';
@@ -49,6 +51,7 @@ export async function compileAngularDecorators(
   // 2. Extract decorator metadata from the AST
   const extractedComponents = parseComponentDecorators(ast, sourceCode);
   const extractedDirectives = parseDirectiveDecorators(ast, sourceCode);
+  const extractedPipes = parsePipeDecorators(ast, sourceCode);
   const extractedNgModules = parseNgModuleDecorators(ast, sourceCode);
 
   // 3. Compile all decorated classes
@@ -67,6 +70,11 @@ export async function compileAngularDecorators(
 
   for (const extracted of extractedDirectives) {
     compiledClasses.push(compileSingleDirective(extracted, absolutePath, constantPool));
+  }
+
+  // Pipes are synchronous (no template resolution needed)
+  for (const extracted of extractedPipes) {
+    compiledClasses.push(compileSinglePipe(extracted, absolutePath));
   }
 
   // NgModules are synchronous (no template resolution needed)

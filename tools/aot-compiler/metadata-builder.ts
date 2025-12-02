@@ -19,6 +19,7 @@ import {
   R3InputMetadata,
   R3NgModuleMetadata,
   R3NgModuleMetadataKind,
+  R3PipeMetadata,
   R3Reference,
   R3SelectorScopeMode,
   R3TemplateDependency,
@@ -42,6 +43,7 @@ import {
   ExtractedComponentMetadata,
   ExtractedDirectiveMetadata,
   ExtractedNgModuleMetadata,
+  ExtractedPipeMetadata,
   HostDirectiveMetadata,
   ImportMetadata,
   InputMetadata,
@@ -109,6 +111,28 @@ export function buildR3DirectiveMetadata(
     isStandalone: extracted.standalone,
     isSignal: extracted.isSignal,
     hostDirectives: buildHostDirectivesMetadata(extracted.hostDirectives),
+  };
+}
+
+/**
+ * Builds the R3PipeMetadata structure from extracted decorator metadata.
+ *
+ * @param extracted The metadata extracted from the @Pipe decorator
+ * @param sourceFilePath The path to the source file (unused for pipes, kept for consistency)
+ * @returns The R3PipeMetadata ready for compilation
+ */
+export function buildR3PipeMetadata(
+  extracted: ExtractedPipeMetadata,
+  sourceFilePath: string,
+): R3PipeMetadata {
+  return {
+    name: extracted.className,
+    type: createR3Reference(extracted.className),
+    typeArgumentCount: extracted.typeArgumentCount,
+    pipeName: extracted.pipeName,
+    deps: null, // Constructor dependencies - not analyzed for basic compilation
+    pure: extracted.pure,
+    isStandalone: extracted.standalone,
   };
 }
 

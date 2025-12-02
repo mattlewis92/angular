@@ -334,6 +334,28 @@ export interface ExtractedNgModuleMetadata {
 }
 
 /**
+ * Metadata extracted from the @Pipe decorator.
+ */
+export interface ExtractedPipeMetadata {
+  /** The class name of the pipe */
+  className: string;
+  /** Location of the class identifier for source span */
+  classLocation: {line: number; column: number} | null;
+  /** Number of generic type parameters on the class */
+  typeArgumentCount: number;
+  /** The decorator arguments Babel AST node (for setClassMetadata) */
+  decoratorArgsNode: t.ObjectExpression | null;
+
+  // Pipe-specific fields
+  /** The pipe name used in templates (required) */
+  pipeName: string;
+  /** Whether the pipe is pure (default: true) */
+  pure: boolean;
+  /** Whether the pipe is standalone (default: true) */
+  standalone: boolean;
+}
+
+/**
  * Resolved template and styles after loading external files.
  */
 export interface ResolvedResources {

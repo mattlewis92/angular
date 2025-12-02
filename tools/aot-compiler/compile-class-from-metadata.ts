@@ -3,6 +3,7 @@ import {
   compileDirectiveFromMetadata,
   compileInjector,
   compileNgModule,
+  compilePipeFromMetadata,
   ConstantPool,
   makeBindingParser,
 } from '@angular/compiler';
@@ -12,6 +13,7 @@ import {
   buildR3DirectiveMetadata,
   buildR3InjectorMetadata,
   buildR3NgModuleMetadata,
+  buildR3PipeMetadata,
 } from './metadata-builder';
 import {
   CompiledClassData,
@@ -19,6 +21,7 @@ import {
   ExtractedComponentMetadata,
   ExtractedDirectiveMetadata,
   ExtractedNgModuleMetadata,
+  ExtractedPipeMetadata,
   ResolvedResources,
 } from './types';
 import path from 'node:path';
@@ -73,6 +76,26 @@ export function compileSingleDirective(
     decoratorType: 'Directive',
     definitionExpr: compiledDirective.expression,
     definitionName: DEFINITION_NAMES.Directive,
+    decoratorArgsNode: extracted.decoratorArgsNode,
+    deferredImportNames: new Set(),
+  };
+}
+
+/**
+ * Compiles a single extracted pipe and returns the compiled data.
+ */
+export function compileSinglePipe(
+  extracted: ExtractedPipeMetadata,
+  absolutePath: string,
+): CompiledClassData {
+  const metadata = buildR3PipeMetadata(extracted, absolutePath);
+  const compiledPipe = compilePipeFromMetadata(metadata);
+
+  return {
+    className: extracted.className,
+    decoratorType: 'Pipe',
+    definitionExpr: compiledPipe.expression,
+    definitionName: DEFINITION_NAMES.Pipe,
     decoratorArgsNode: extracted.decoratorArgsNode,
     deferredImportNames: new Set(),
   };
