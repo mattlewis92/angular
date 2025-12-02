@@ -569,27 +569,48 @@ function transformAndEmitWithBabel(
         classBody.pushContainer('body', defStaticBlock);
       },
 
-      // Add imports at the beginning, additional statements after existing imports
+      // Add new imports after existing imports, additional statements after all imports
       Program: {
         exit(path: NodePath<t.Program>) {
-          // Add new import declarations at the top
-          if (newImportDeclarations.length > 0) {
-            path.unshiftContainer('body', newImportDeclarations);
+          const body = path.get('body');
+
+          // Find the position after all existing import declarations
+          let lastImportIndex = -1;
+          for (let i = 0; i < body.length; i++) {
+            if (body[i].isImportDeclaration()) {
+              lastImportIndex = i;
+            }
           }
 
-          // Find the position after all import declarations to insert additional statements
-          if (additionalStatements.length > 0) {
-            const body = path.get('body');
-            let lastImportIndex = -1;
-            for (let i = 0; i < body.length; i++) {
-              if (body[i].isImportDeclaration()) {
-                lastImportIndex = i;
+          // Add new import declarations after existing imports
+          if (newImportDeclarations.length > 0) {
+            if (lastImportIndex === -1) {
+              // No existing imports - add at the beginning
+              for (let i = newImportDeclarations.length - 1; i >= 0; i--) {
+                body[0].insertBefore(newImportDeclarations[i]);
+              }
+            } else {
+              // Insert after the last existing import
+              for (const decl of newImportDeclarations) {
+                body[lastImportIndex].insertAfter(decl);
               }
             }
-            // Insert additional statements after the last import (or at the beginning if no imports)
-            const insertIndex = lastImportIndex + 1;
+          }
+
+          // Re-scan to find the new last import index after adding our imports
+          let newLastImportIndex = -1;
+          const updatedBody = path.get('body');
+          for (let i = 0; i < updatedBody.length; i++) {
+            if (updatedBody[i].isImportDeclaration()) {
+              newLastImportIndex = i;
+            }
+          }
+
+          // Insert additional statements after the last import (or at the beginning if no imports)
+          if (additionalStatements.length > 0) {
+            const insertIndex = newLastImportIndex + 1;
             for (let i = additionalStatements.length - 1; i >= 0; i--) {
-              body[insertIndex].insertBefore(additionalStatements[i]);
+              updatedBody[insertIndex].insertBefore(additionalStatements[i]);
             }
           }
 
