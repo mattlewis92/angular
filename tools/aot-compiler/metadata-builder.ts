@@ -369,8 +369,9 @@ function buildQueriesMetadata(queries: QueryMetadata[]): any[] {
       // String predicate - could be template ref or class name
       if (/^[A-Z]/.test(query.predicate)) {
         // Looks like a class reference (PascalCase) - wrap as type predicate
+        // Use ForwardRefHandling.Unwrapped if the predicate was wrapped in forwardRef()
         predicate = {
-          forwardRef: ForwardRefHandling.None,
+          forwardRef: query.isForwardRef ? ForwardRefHandling.Unwrapped : ForwardRefHandling.None,
           expression: new ReadVarExpr(query.predicate),
         };
       } else {
@@ -408,7 +409,7 @@ function buildHostDirectivesMetadata(hostDirectives: HostDirectiveMetadata[] | n
       value: new ReadVarExpr(hd.directive),
       type: new ReadVarExpr(hd.directive),
     },
-    isForwardReference: false,
+    isForwardReference: hd.isForwardRef,
     // inputs/outputs should be { [publicName]: bindingName } or null
     inputs: hd.inputs ?? null,
     outputs: hd.outputs ?? null,

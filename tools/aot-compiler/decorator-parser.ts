@@ -714,6 +714,7 @@ function extractMetadata(
     viewProviders: null,
     animations: null,
     hostDirectives: null,
+    containsForwardDecls: false,
   };
 
   if (decorator.arguments.length === 0) return metadata;
@@ -781,9 +782,12 @@ function extractMetadata(
         case 'outputs':
           metadata.outputs = extractOutputs(value);
           break;
-        case 'imports':
-          metadata.imports = extractImports(value, importMap);
+        case 'imports': {
+          const result = extractReferenceArray(value, importMap);
+          metadata.imports = result.imports;
+          metadata.containsForwardDecls = result.hasForwardRef;
           break;
+        }
         case 'exportAs': {
           const exportAsStr = extractStringValue(value);
           if (exportAsStr) {
@@ -1037,31 +1041,6 @@ function extractOutputs(node: t.Node): Record<string, string> {
 }
 
 /**
- * Extracts imports from the @Component.imports array.
- * Maps identifier names to their module paths using the import map.
- */
-function extractImports(node: t.Node, importMap: Map<string, string>): ImportMetadata[] {
-  const result: ImportMetadata[] = [];
-
-  if (t.isArrayExpression(node)) {
-    for (const element of node.elements) {
-      if (!element) continue;
-
-      // Handle direct identifier reference: imports: [ChildComponent]
-      if (t.isIdentifier(element)) {
-        const name = element.name;
-        const modulePath = importMap.get(name);
-        if (modulePath) {
-          result.push({name, modulePath});
-        }
-      }
-    }
-  }
-
-  return result;
-}
-
-/**
  * Extracts the class body source code (members only, without the class declaration).
  */
 function extractClassBody(classDecl: t.ClassDeclaration, sourceCode: string): string {
@@ -1255,6 +1234,7 @@ function parseQueryDecorator(
   let read: string | null = null;
   let isStatic = false;
   let descendants = isContentQuery ? false : true; // ContentChild defaults to false, others to true
+  let isForwardRef = false;
 
   // First argument is the predicate (selector or type reference)
   const predicateArg = callExpr.arguments[0];
@@ -1267,6 +1247,13 @@ function parseQueryDecorator(
       predicate = predicateArg.elements
         .filter((el): el is t.StringLiteral => t.isStringLiteral(el))
         .map((el) => el.value);
+    } else {
+      // Try to unwrap forwardRef(() => Type)
+      const unwrapped = unwrapForwardRef(predicateArg);
+      if (unwrapped && t.isIdentifier(unwrapped)) {
+        predicate = unwrapped.name;
+        isForwardRef = true;
+      }
     }
   }
 
@@ -1300,6 +1287,7 @@ function parseQueryDecorator(
     static: isStatic,
     descendants,
     isSignal: false,
+    isForwardRef,
   };
 }
 
@@ -1387,6 +1375,23 @@ function extractHostDirectives(
           modulePath,
           inputs: null,
           outputs: null,
+          isForwardRef: false,
+        });
+      }
+      continue;
+    }
+
+    // Simple reference with forwardRef: hostDirectives: [forwardRef(() => MyDirective)]
+    const simpleUnwrapped = unwrapForwardRef(element);
+    if (simpleUnwrapped && t.isIdentifier(simpleUnwrapped)) {
+      const modulePath = importMap.get(simpleUnwrapped.name);
+      if (modulePath) {
+        result.push({
+          directive: simpleUnwrapped.name,
+          modulePath,
+          inputs: null,
+          outputs: null,
+          isForwardRef: true,
         });
       }
       continue;
@@ -1397,6 +1402,7 @@ function extractHostDirectives(
       let directive: string | null = null;
       let inputs: Record<string, string> | null = null;
       let outputs: Record<string, string> | null = null;
+      let isForwardRef = false;
 
       for (const prop of element.properties) {
         if (!t.isObjectProperty(prop) || !t.isIdentifier(prop.key)) continue;
@@ -1405,6 +1411,13 @@ function extractHostDirectives(
           case 'directive':
             if (t.isIdentifier(prop.value)) {
               directive = prop.value.name;
+            } else {
+              // Try to unwrap forwardRef(() => Directive)
+              const unwrapped = unwrapForwardRef(prop.value);
+              if (unwrapped && t.isIdentifier(unwrapped)) {
+                directive = unwrapped.name;
+                isForwardRef = true;
+              }
             }
             break;
           case 'inputs':
@@ -1419,7 +1432,7 @@ function extractHostDirectives(
       if (directive) {
         const modulePath = importMap.get(directive);
         if (modulePath) {
-          result.push({directive, modulePath, inputs, outputs});
+          result.push({directive, modulePath, inputs, outputs, isForwardRef});
         }
       }
     }

@@ -219,6 +219,8 @@ export interface ExtractedComponentMetadata extends ExtractedDirectiveMetadata {
   viewProviders: t.Expression | null;
   /** Animations array expression */
   animations: t.Expression | null;
+  /** True if the imports array contains forwardRef() wrappers */
+  containsForwardDecls: boolean;
 }
 
 /**
@@ -253,6 +255,8 @@ export interface QueryMetadata {
   descendants: boolean;
   /** Whether this is a signal-based query */
   isSignal: boolean;
+  /** Whether the predicate was wrapped in forwardRef() */
+  isForwardRef: boolean;
 }
 
 /**
@@ -267,6 +271,8 @@ export interface HostDirectiveMetadata {
   inputs: Record<string, string> | null;
   /** Output mappings: { publicName: bindingName } */
   outputs: Record<string, string> | null;
+  /** Whether the directive reference was wrapped in forwardRef() */
+  isForwardRef: boolean;
 }
 
 /**

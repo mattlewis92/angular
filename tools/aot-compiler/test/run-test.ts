@@ -235,6 +235,13 @@ async function main(): Promise<void> {
   );
   allPassed = allPassed && moduleResult;
 
+  // Test forwardRef support (comprehensive forwardRef metadata extraction)
+  const forwardRefResult = await testComponent(
+    path.join(testDir, 'forward-ref.component.ts'),
+    'ForwardRef Support',
+  );
+  allPassed = allPassed && forwardRefResult;
+
   if (!allPassed) {
     process.exit(1);
   }
