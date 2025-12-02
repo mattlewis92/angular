@@ -31,6 +31,14 @@ export interface CompilationResult {
   sourceMapComment: string;
   /** Names of component classes that were compiled (used for HMR) */
   compiledComponentClasses?: string[];
+  /**
+   * File paths of all dependencies read during compilation.
+   * These are files that can affect the compilation result:
+   * - External template files (templateUrl)
+   * - External style files (styleUrls)
+   * - Files read to resolve defer block dependencies
+   */
+  dependencies?: string[];
 }
 
 /**
@@ -207,4 +215,6 @@ export interface ResolvedResources {
   templateUrl: string;
   /** Combined styles (inline + external) */
   styles: string[];
+  /** Resolved style file paths (absolute paths of external styles that were loaded) */
+  styleUrls: string[];
 }

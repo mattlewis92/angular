@@ -61,6 +61,8 @@ export interface BuildMetadataResult {
   metadata: R3ComponentMetadata<R3TemplateDependency>;
   /** Names of imports that are deferred and should be removed from static imports */
   deferredImportNames: Set<string>;
+  /** File paths that were read to resolve defer block dependencies */
+  deferResolvedFilePaths: string[];
 }
 
 /**
@@ -279,6 +281,7 @@ export function buildR3ComponentMetadata(
       hostDirectives: buildHostDirectivesMetadata(extracted.hostDirectives),
     },
     deferredImportNames: deferResult.deferredImportNames,
+    deferResolvedFilePaths: deferResult.resolvedFilePaths,
   };
 }
 
@@ -403,6 +406,8 @@ export interface DeferMetadataResult {
     | {mode: DeferBlockDepsEmitMode.PerComponent; dependenciesFn: o.Expression | null};
   /** Names of imports that are deferred and should be removed from static imports */
   deferredImportNames: Set<string>;
+  /** File paths that were read to resolve defer block dependencies */
+  resolvedFilePaths: string[];
 }
 
 /**
@@ -430,6 +435,7 @@ function buildDeferMetadata(
         dependenciesFn: null,
       },
       deferredImportNames: new Set(),
+      resolvedFilePaths: [],
     };
   }
 
@@ -444,6 +450,7 @@ function buildDeferMetadata(
         blocks: new Map(),
       },
       deferredImportNames: new Set(),
+      resolvedFilePaths: [],
     };
   }
 
@@ -456,6 +463,7 @@ function buildDeferMetadata(
         blocks: new Map(),
       },
       deferredImportNames: new Set(),
+      resolvedFilePaths: [],
     };
   }
 
@@ -497,6 +505,7 @@ function buildDeferMetadata(
       blocks,
     },
     deferredImportNames,
+    resolvedFilePaths: importArtifactMap.resolvedFilePaths,
   };
 }
 
@@ -647,6 +656,8 @@ class PipeCollectorVisitor extends RecursiveAstVisitor {
 interface ImportArtifactMap {
   /** Map from import name to its artifact metadata */
   artifacts: Map<string, {import: ImportMetadata; artifact: AngularArtifactMetadata}>;
+  /** File paths that were read to resolve the artifacts */
+  resolvedFilePaths: string[];
 }
 
 /**
@@ -658,15 +669,17 @@ function buildImportArtifactMap(
   readFile: (path: string) => string,
 ): ImportArtifactMap {
   const artifacts = new Map<string, {import: ImportMetadata; artifact: AngularArtifactMetadata}>();
+  const resolvedFilePaths: string[] = [];
 
   for (const imp of imports) {
-    const artifact = getAngularArtifactMetadata(imp.modulePath, imp.name, componentDir, readFile);
-    if (artifact) {
-      artifacts.set(imp.name, {import: imp, artifact});
+    const result = getAngularArtifactMetadata(imp.modulePath, imp.name, componentDir, readFile);
+    if (result) {
+      artifacts.set(imp.name, {import: imp, artifact: result.artifact});
+      resolvedFilePaths.push(result.resolvedPath);
     }
   }
 
-  return {artifacts};
+  return {artifacts, resolvedFilePaths};
 }
 
 /**
@@ -763,6 +776,14 @@ function parseSelector(selectorStr: string): ParsedSelector[] {
 }
 
 /**
+ * Result of extracting Angular artifact metadata from a file.
+ */
+interface ArtifactResult {
+  artifact: AngularArtifactMetadata;
+  resolvedPath: string;
+}
+
+/**
  * Extracts Angular artifact metadata from an imported file.
  * Supports @Component, @Directive, and @Pipe decorators.
  */
@@ -771,7 +792,7 @@ function getAngularArtifactMetadata(
   importName: string,
   componentDir: string,
   readFile: (path: string) => string,
-): AngularArtifactMetadata | null {
+): ArtifactResult | null {
   try {
     // Resolve the import path relative to the component directory
     let resolvedPath = path.resolve(componentDir, modulePath);
@@ -787,7 +808,7 @@ function getAngularArtifactMetadata(
       plugins: ['typescript', 'decorators-legacy', 'classProperties'],
     });
 
-    let result: AngularArtifactMetadata | null = null;
+    let artifact: AngularArtifactMetadata | null = null;
 
     // Find the class with the matching name and its decorator
     traverse(ast, {
@@ -817,7 +838,7 @@ function getAngularArtifactMetadata(
                 t.isStringLiteral(prop.value)
               ) {
                 const selectorStr = prop.value.value;
-                result = {
+                artifact = {
                   kind: decoratorName === 'Component' ? 'component' : 'directive',
                   selector: selectorStr,
                   parsedSelectors: parseSelector(selectorStr),
@@ -834,7 +855,7 @@ function getAngularArtifactMetadata(
                 prop.key.name === 'name' &&
                 t.isStringLiteral(prop.value)
               ) {
-                result = {
+                artifact = {
                   kind: 'pipe',
                   selector: prop.value.value,
                 };
@@ -846,7 +867,10 @@ function getAngularArtifactMetadata(
       },
     });
 
-    return result;
+    if (artifact) {
+      return {artifact, resolvedPath};
+    }
+    return null;
   } catch {
     // If we can't read or parse the file, return null
     return null;

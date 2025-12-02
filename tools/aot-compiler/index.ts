@@ -71,6 +71,8 @@ interface CompiledClassData {
   deferredImportNames: Set<string>;
   /** Resolved template/styles (only for components) */
   resources?: ResolvedResources;
+  /** File paths read to resolve defer block dependencies (only for components) */
+  deferResolvedFilePaths?: string[];
 }
 
 /**
@@ -132,7 +134,7 @@ function compileSingleComponent(
   enableHmr: boolean,
 ): CompiledClassData {
   const resources = resolveTemplateAndStyles(extracted, absolutePath, readFile);
-  const {metadata, deferredImportNames} = buildR3ComponentMetadata(
+  const {metadata, deferredImportNames, deferResolvedFilePaths} = buildR3ComponentMetadata(
     extracted,
     resources,
     absolutePath,
@@ -150,6 +152,7 @@ function compileSingleComponent(
     decoratorArgsNode: extracted.decoratorArgsNode,
     deferredImportNames,
     resources,
+    deferResolvedFilePaths,
   };
 }
 
@@ -274,6 +277,24 @@ export function compileAngularDecorators(
   result.compiledComponentClasses = compiledClasses
     .filter((c) => c.decoratorType === 'Component')
     .map((c) => c.className);
+
+  // 5. Collect all file dependencies
+  const dependencies: string[] = [];
+  for (const compiled of compiledClasses) {
+    // Add external template URL (if it's an actual file path, not a ng:/// URL)
+    if (compiled.resources?.templateUrl && !compiled.resources.templateUrl.startsWith('ng:///')) {
+      dependencies.push(compiled.resources.templateUrl);
+    }
+    // Add external style URLs
+    if (compiled.resources?.styleUrls) {
+      dependencies.push(...compiled.resources.styleUrls);
+    }
+    // Add defer block dependency files
+    if (compiled.deferResolvedFilePaths) {
+      dependencies.push(...compiled.deferResolvedFilePaths);
+    }
+  }
+  result.dependencies = dependencies;
 
   return result;
 }
@@ -913,13 +934,15 @@ function resolveTemplateAndStyles(
 
   // Resolve styles
   const styles = [...metadata.styles];
+  const styleUrls: string[] = [];
 
   for (const styleUrl of metadata.styleUrls) {
     const stylePath = path.resolve(componentDir, styleUrl);
     styles.push(readFile(stylePath));
+    styleUrls.push(stylePath);
   }
 
-  return {template, templateUrl, styles};
+  return {template, templateUrl, styles, styleUrls};
 }
 
 /**
