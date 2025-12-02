@@ -112,12 +112,12 @@ interface ParsedFile {
 /**
  * Parses a TypeScript file and returns the AST and source code.
  */
-function parseFile(
+async function parseFile(
   filePath: string,
-  readFile: (path: string) => string = defaultReadFile,
-): ParsedFile {
+  readFile: (path: string) => Promise<string> = defaultReadFile,
+): Promise<ParsedFile> {
   const absolutePath = path.resolve(filePath);
-  const sourceCode = readFile(absolutePath);
+  const sourceCode = await readFile(absolutePath);
   const ast = parse(sourceCode, {
     ...BABEL_PARSER_OPTIONS,
     sourceFilename: absolutePath,
@@ -128,15 +128,15 @@ function parseFile(
 /**
  * Compiles a single extracted component and returns the compiled data.
  */
-function compileSingleComponent(
+async function compileSingleComponent(
   extracted: ExtractedComponentMetadata,
   absolutePath: string,
-  readFile: (path: string) => string,
+  readFile: (path: string) => Promise<string>,
   constantPool: ConstantPool,
   enableHmr: boolean,
-): CompiledClassData {
-  const resources = resolveTemplateAndStyles(extracted, absolutePath, readFile);
-  const {metadata, deferredImportNames, deferResolvedFilePaths} = buildR3ComponentMetadata(
+): Promise<CompiledClassData> {
+  const resources = await resolveTemplateAndStyles(extracted, absolutePath, readFile);
+  const {metadata, deferredImportNames, deferResolvedFilePaths} = await buildR3ComponentMetadata(
     extracted,
     resources,
     absolutePath,
@@ -248,10 +248,10 @@ function collectNamedImports(ast: ParseResult<t.File>): string[] {
  * @param options Compilation options
  * @returns The compilation result with JavaScript code and source map
  */
-export function compileAngularDecorators(
+export async function compileAngularDecorators(
   filePath: string,
   options: CompileComponentOptions = {},
-): CompilationResult {
+): Promise<CompilationResult> {
   const {
     generateSourceMap = true,
     readFile = defaultReadFile,
@@ -260,7 +260,7 @@ export function compileAngularDecorators(
   } = options;
 
   // 1. Parse the source file
-  const {ast, sourceCode, absolutePath} = parseFile(filePath, readFile);
+  const {ast, sourceCode, absolutePath} = await parseFile(filePath, readFile);
 
   // 2. Extract decorator metadata from the AST
   const extractedComponents = parseComponentDecorators(ast, sourceCode);
@@ -276,7 +276,7 @@ export function compileAngularDecorators(
       throw new Error(`${extracted.className}: Component must have a selector`);
     }
     compiledClasses.push(
-      compileSingleComponent(extracted, absolutePath, readFile, constantPool, enableHmr),
+      await compileSingleComponent(extracted, absolutePath, readFile, constantPool, enableHmr),
     );
   }
 
@@ -319,15 +319,15 @@ export function compileAngularDecorators(
  * @param options Compilation options
  * @returns The HMR update module code and dependencies
  */
-export function compileHmrUpdateCode(
+export async function compileHmrUpdateCode(
   filePath: string,
   className: string,
   options: CompileComponentOptions = {},
-): HmrCompilationResult {
+): Promise<HmrCompilationResult> {
   const {readFile = defaultReadFile, babelPlugins = []} = options;
 
   // 1. Parse the source file
-  const {ast, sourceCode, absolutePath} = parseFile(filePath, readFile);
+  const {ast, sourceCode, absolutePath} = await parseFile(filePath, readFile);
 
   // 2. Extract all component decorators and find the target
   const extractedComponents = parseComponentDecorators(ast, sourceCode);
@@ -339,7 +339,7 @@ export function compileHmrUpdateCode(
 
   // 3. Compile the component (HMR update code always has enableHmr=true)
   const constantPool = new ConstantPool();
-  const compiled = compileSingleComponent(
+  const compiled = await compileSingleComponent(
     targetComponent,
     absolutePath,
     readFile,
@@ -922,11 +922,11 @@ function generateHmrUpdateModule(
 /**
  * Resolves external template and style files.
  */
-function resolveTemplateAndStyles(
+async function resolveTemplateAndStyles(
   metadata: ExtractedComponentMetadata,
   componentFilePath: string,
-  readFile: (path: string) => string,
-): ResolvedResources {
+  readFile: (path: string) => Promise<string>,
+): Promise<ResolvedResources> {
   const componentDir = path.dirname(componentFilePath);
 
   // Resolve template
@@ -935,7 +935,7 @@ function resolveTemplateAndStyles(
 
   if (!template && metadata.templateUrl) {
     const templatePath = path.resolve(componentDir, metadata.templateUrl);
-    template = readFile(templatePath);
+    template = await readFile(templatePath);
     templateUrl = templatePath;
   }
 
@@ -949,7 +949,7 @@ function resolveTemplateAndStyles(
 
   for (const styleUrl of metadata.styleUrls) {
     const stylePath = path.resolve(componentDir, styleUrl);
-    styles.push(readFile(stylePath));
+    styles.push(await readFile(stylePath));
     styleUrls.push(stylePath);
   }
 
@@ -957,10 +957,10 @@ function resolveTemplateAndStyles(
 }
 
 /**
- * Default file reader using Node.js fs.
+ * Default file reader using Node.js fs.promises.
  */
-function defaultReadFile(filePath: string): string {
-  return fs.readFileSync(filePath, 'utf-8');
+async function defaultReadFile(filePath: string): Promise<string> {
+  return fs.promises.readFile(filePath, 'utf-8');
 }
 
 /**
@@ -978,19 +978,21 @@ if (require.main === module) {
 
   const filePath = args[0];
 
-  try {
-    const result = compileAngularDecorators(filePath);
+  (async () => {
+    try {
+      const result = await compileAngularDecorators(filePath);
 
-    // Output the compiled code with source map comment
-    // tslint:disable-next-line:no-console
-    console.log(result.code);
-    if (result.sourceMapComment) {
+      // Output the compiled code with source map comment
       // tslint:disable-next-line:no-console
-      console.log(result.sourceMapComment);
+      console.log(result.code);
+      if (result.sourceMapComment) {
+        // tslint:disable-next-line:no-console
+        console.log(result.sourceMapComment);
+      }
+    } catch (error) {
+      console.error('Compilation error:');
+      console.error(`  - ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
     }
-  } catch (error) {
-    console.error('Compilation error:');
-    console.error(`  - ${error instanceof Error ? error.message : String(error)}`);
-    process.exit(1);
-  }
+  })();
 }

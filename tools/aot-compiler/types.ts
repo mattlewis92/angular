@@ -66,7 +66,7 @@ export interface CompileComponentOptions {
   /** Base path for resolving relative templateUrl/styleUrls */
   basePath?: string;
   /** Custom file reader function for external templates/styles */
-  readFile?: (path: string) => string;
+  readFile?: (path: string) => Promise<string>;
   /** Enable HMR code generation (default: false) */
   enableHmr?: boolean;
   /** Additional Babel plugins to run alongside the Angular transforms */

@@ -150,13 +150,13 @@ function buildTypeSourceSpan(
  * @param readFile Function to read files (for resolving import selectors)
  * @returns The R3ComponentMetadata and deferred import information
  */
-export function buildR3ComponentMetadata(
+export async function buildR3ComponentMetadata(
   extracted: ExtractedComponentMetadata,
   resources: ResolvedResources,
   sourceFilePath: string,
   enableHmr: boolean = false,
-  readFile?: (path: string) => string,
-): BuildMetadataResult {
+  readFile?: (path: string) => Promise<string>,
+): Promise<BuildMetadataResult> {
   // Build interpolation config
   const interpolationConfig = extracted.interpolation
     ? InterpolationConfig.fromArray(extracted.interpolation)
@@ -218,7 +218,7 @@ export function buildR3ComponentMetadata(
   // Build defer blocks metadata
   // When HMR is enabled, defer dependencies are loaded eagerly (canDeferDeps=false)
   // because HMR update modules can't have dynamic imports
-  const deferResult = buildDeferMetadata(
+  const deferResult = await buildDeferMetadata(
     parsedTemplate.nodes,
     extracted.imports,
     sourceFilePath,
@@ -419,13 +419,13 @@ export interface DeferMetadataResult {
  * - PerBlock mode: { mode: PerBlock, blocks: Map }
  * - PerComponent mode: { mode: PerComponent, dependenciesFn: Expression | null }
  */
-function buildDeferMetadata(
+async function buildDeferMetadata(
   templateNodes: TmplAstNode[],
   imports: ImportMetadata[],
   sourceFilePath: string,
   enableHmr: boolean,
-  readFile?: (path: string) => string,
-): DeferMetadataResult {
+  readFile?: (path: string) => Promise<string>,
+): Promise<DeferMetadataResult> {
   // When HMR is enabled, dependencies can't be deferred because HMR update
   // modules can't have dynamic imports. All dependencies are loaded eagerly.
   if (enableHmr) {
@@ -469,7 +469,7 @@ function buildDeferMetadata(
 
   // Build a map of import names to their Angular artifact metadata
   const componentDir = path.dirname(sourceFilePath);
-  const importArtifactMap = buildImportArtifactMap(imports, componentDir, readFile);
+  const importArtifactMap = await buildImportArtifactMap(imports, componentDir, readFile);
 
   // Build the blocks map with dependency expressions
   const blocks = new Map<TmplAstDeferredBlock, o.Expression | null>();
@@ -663,16 +663,21 @@ interface ImportArtifactMap {
 /**
  * Builds a map of import names to their Angular artifact metadata.
  */
-function buildImportArtifactMap(
+async function buildImportArtifactMap(
   imports: ImportMetadata[],
   componentDir: string,
-  readFile: (path: string) => string,
-): ImportArtifactMap {
+  readFile: (path: string) => Promise<string>,
+): Promise<ImportArtifactMap> {
   const artifacts = new Map<string, {import: ImportMetadata; artifact: AngularArtifactMetadata}>();
   const resolvedFilePaths: string[] = [];
 
   for (const imp of imports) {
-    const result = getAngularArtifactMetadata(imp.modulePath, imp.name, componentDir, readFile);
+    const result = await getAngularArtifactMetadata(
+      imp.modulePath,
+      imp.name,
+      componentDir,
+      readFile,
+    );
     if (result) {
       artifacts.set(imp.name, {import: imp, artifact: result.artifact});
       resolvedFilePaths.push(result.resolvedPath);
@@ -787,12 +792,12 @@ interface ArtifactResult {
  * Extracts Angular artifact metadata from an imported file.
  * Supports @Component, @Directive, and @Pipe decorators.
  */
-function getAngularArtifactMetadata(
+async function getAngularArtifactMetadata(
   modulePath: string,
   importName: string,
   componentDir: string,
-  readFile: (path: string) => string,
-): ArtifactResult | null {
+  readFile: (path: string) => Promise<string>,
+): Promise<ArtifactResult | null> {
   try {
     // Resolve the import path relative to the component directory
     let resolvedPath = path.resolve(componentDir, modulePath);
@@ -802,7 +807,7 @@ function getAngularArtifactMetadata(
       resolvedPath += '.ts';
     }
 
-    const sourceCode = readFile(resolvedPath);
+    const sourceCode = await readFile(resolvedPath);
     const ast = parse(sourceCode, {
       sourceType: 'module',
       plugins: ['typescript', 'decorators-legacy', 'classProperties'],
