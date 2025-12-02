@@ -95,8 +95,6 @@ export interface CompilationResult {
   code: string;
   /** Source map as JSON object */
   sourceMap: SourceMap | null;
-  /** Source map as inline comment string */
-  sourceMapComment: string;
   /** Names of component classes that were compiled (used for HMR) */
   compiledComponentClasses?: string[];
   /**

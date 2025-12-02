@@ -29,9 +29,9 @@ if (require.main === module) {
       // Output the compiled code with source map comment
       // tslint:disable-next-line:no-console
       console.log(result.code);
-      if (result.sourceMapComment) {
+      if (result.sourceMap) {
         // tslint:disable-next-line:no-console
-        console.log(result.sourceMapComment);
+        console.log(JSON.stringify(result.sourceMap, null, 2));
       }
     } catch (error) {
       console.error('Compilation error:');

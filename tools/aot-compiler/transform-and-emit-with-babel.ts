@@ -312,7 +312,6 @@ export function transformAndEmitWithBabel(
 
   // Extract source map info
   let sourceMap: SourceMap | null = null;
-  let sourceMapComment = '';
 
   if (generateSourceMap && output.map) {
     // Build a map of source URL to content for deduplication and content lookup
@@ -348,14 +347,10 @@ export function transformAndEmitWithBabel(
       sourcesContent: uniqueSourcesContent,
       mappings: output.map.mappings,
     };
-    // Create inline source map comment
-    const sourceMapBase64 = Buffer.from(JSON.stringify(sourceMap)).toString('base64');
-    sourceMapComment = `//# sourceMappingURL=data:application/json;base64,${sourceMapBase64}`;
   }
 
   return {
     code: output.code,
     sourceMap,
-    sourceMapComment,
   };
 }
