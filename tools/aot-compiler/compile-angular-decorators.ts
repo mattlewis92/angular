@@ -2,11 +2,11 @@ import {ConstantPool} from '@angular/compiler';
 
 import {
   collectDependencies,
-  compileSingleComponent,
-  compileSingleDirective,
-  compileSingleInjectable,
-  compileSingleNgModule,
-  compileSinglePipe,
+  compileComponentClass,
+  compileDirectiveClass,
+  compileInjectableClass,
+  compileNgModuleClass,
+  compilePipeClass,
 } from './compile-class-from-metadata';
 import {
   parseComponentDecorators,
@@ -65,27 +65,27 @@ export async function compileAngularDecorators(
       throw new Error(`${extracted.className}: Component must have a selector`);
     }
     compiledClasses.push(
-      await compileSingleComponent(extracted, absolutePath, readFile, constantPool, enableHmr),
+      await compileComponentClass(extracted, absolutePath, readFile, constantPool, enableHmr),
     );
   }
 
   for (const extracted of extractedDirectives) {
-    compiledClasses.push(compileSingleDirective(extracted, absolutePath, constantPool));
+    compiledClasses.push(compileDirectiveClass(extracted, absolutePath, constantPool));
   }
 
   // Pipes are synchronous (no template resolution needed)
   for (const extracted of extractedPipes) {
-    compiledClasses.push(compileSinglePipe(extracted, absolutePath));
+    compiledClasses.push(compilePipeClass(extracted, absolutePath));
   }
 
   // Injectables are synchronous (no template resolution needed)
   for (const extracted of extractedInjectables) {
-    compiledClasses.push(compileSingleInjectable(extracted));
+    compiledClasses.push(compileInjectableClass(extracted));
   }
 
   // NgModules are synchronous (no template resolution needed)
   for (const extracted of extractedNgModules) {
-    compiledClasses.push(compileSingleNgModule(extracted, absolutePath));
+    compiledClasses.push(compileNgModuleClass(extracted, absolutePath));
   }
 
   // 4. Transform AST and emit JavaScript with source maps

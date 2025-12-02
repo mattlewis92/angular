@@ -1,7 +1,7 @@
 import {ConstantPool} from '@angular/compiler';
 
 import {BabelBackedTranslator} from './babel-translator';
-import {compileSingleComponent, collectDependencies} from './compile-class-from-metadata';
+import {compileComponentClass, collectDependencies} from './compile-class-from-metadata';
 import {parseComponentDecorators} from './decorator-parser';
 import {buildHmrMetadata, generateHmrUpdateModule} from './hmr-utils';
 import {CompileComponentOptions, HmrCompilationResult} from './types';
@@ -42,7 +42,7 @@ export async function compileHmrUpdateCode(
 
   // 3. Compile the component (HMR update code always has enableHmr=true)
   const constantPool = new ConstantPool();
-  const compiled = await compileSingleComponent(
+  const compiled = await compileComponentClass(
     targetComponent,
     absolutePath,
     readFile,

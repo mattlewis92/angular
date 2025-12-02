@@ -32,7 +32,7 @@ import path from 'node:path';
 /**
  * Compiles a single extracted component and returns the compiled data.
  */
-export async function compileSingleComponent(
+export async function compileComponentClass(
   extracted: ExtractedComponentMetadata,
   absolutePath: string,
   readFile: (path: string) => Promise<string>,
@@ -65,7 +65,7 @@ export async function compileSingleComponent(
 /**
  * Compiles a single extracted directive and returns the compiled data.
  */
-export function compileSingleDirective(
+export function compileDirectiveClass(
   extracted: ExtractedDirectiveMetadata,
   absolutePath: string,
   constantPool: ConstantPool,
@@ -87,7 +87,7 @@ export function compileSingleDirective(
 /**
  * Compiles a single extracted pipe and returns the compiled data.
  */
-export function compileSinglePipe(
+export function compilePipeClass(
   extracted: ExtractedPipeMetadata,
   absolutePath: string,
 ): CompiledClassData {
@@ -113,7 +113,7 @@ export function compileSinglePipe(
  * @param extracted The metadata extracted from the @Injectable decorator
  * @returns The compiled class data with ɵprov definition
  */
-export function compileSingleInjectable(extracted: ExtractedInjectableMetadata): CompiledClassData {
+export function compileInjectableClass(extracted: ExtractedInjectableMetadata): CompiledClassData {
   const metadata = buildR3InjectableMetadata(extracted);
 
   // Compile the injectable - resolveForwardRefs=true enables forwardRef support
@@ -194,7 +194,7 @@ export function collectDependencies(compiled: CompiledClassData): string[] {
  * - ɵmod (module definition) from compileNgModule
  * - ɵinj (injector definition) from compileInjector
  */
-export function compileSingleNgModule(
+export function compileNgModuleClass(
   extracted: ExtractedNgModuleMetadata,
   absolutePath: string,
 ): CompiledClassData {
