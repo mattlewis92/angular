@@ -4,12 +4,14 @@ import {
   collectDependencies,
   compileSingleComponent,
   compileSingleDirective,
+  compileSingleInjectable,
   compileSingleNgModule,
   compileSinglePipe,
 } from './compile-class-from-metadata';
 import {
   parseComponentDecorators,
   parseDirectiveDecorators,
+  parseInjectableDecorators,
   parseNgModuleDecorators,
   parsePipeDecorators,
 } from './decorator-parser';
@@ -21,12 +23,10 @@ import {defaultReadFile} from './file-utils';
 /**
  * Compiles all Angular decorators in a TypeScript file to JavaScript.
  *
- * This function parses all @Component, @Directive, and @NgModule decorators from the
- * TypeScript source, resolves external templates and styles, and compiles each using
- * Angular's compiler APIs. It outputs JavaScript code with source map support.
- *
- * Currently supports @Component, @Directive, and @NgModule decorators. Future versions
- * will support @Pipe and @Injectable.
+ * This function parses all @Component, @Directive, @Pipe, @Injectable, and @NgModule
+ * decorators from the TypeScript source, resolves external templates and styles, and
+ * compiles each using Angular's compiler APIs. It outputs JavaScript code with source
+ * map support.
  *
  * @param fileContents The TypeScript source code to compile
  * @param filePath Absolute path to the TypeScript file (for source maps and resolving imports)
@@ -52,6 +52,7 @@ export async function compileAngularDecorators(
   const extractedComponents = parseComponentDecorators(ast, sourceCode);
   const extractedDirectives = parseDirectiveDecorators(ast, sourceCode);
   const extractedPipes = parsePipeDecorators(ast, sourceCode);
+  const extractedInjectables = parseInjectableDecorators(ast, sourceCode);
   const extractedNgModules = parseNgModuleDecorators(ast, sourceCode);
 
   // 3. Compile all decorated classes
@@ -75,6 +76,11 @@ export async function compileAngularDecorators(
   // Pipes are synchronous (no template resolution needed)
   for (const extracted of extractedPipes) {
     compiledClasses.push(compileSinglePipe(extracted, absolutePath));
+  }
+
+  // Injectables are synchronous (no template resolution needed)
+  for (const extracted of extractedInjectables) {
+    compiledClasses.push(compileSingleInjectable(extracted));
   }
 
   // NgModules are synchronous (no template resolution needed)

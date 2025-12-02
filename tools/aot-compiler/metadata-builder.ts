@@ -13,8 +13,10 @@ import {
   ParseSourceSpan,
   parseTemplate,
   R3ComponentMetadata,
+  R3DependencyMetadata,
   R3DirectiveMetadata,
   R3HostMetadata,
+  R3InjectableMetadata,
   R3InjectorMetadata,
   R3InputMetadata,
   R3NgModuleMetadata,
@@ -40,13 +42,16 @@ import * as t from '@babel/types';
 import * as path from 'path';
 
 import {
+  DependencyMetadata,
   ExtractedComponentMetadata,
   ExtractedDirectiveMetadata,
+  ExtractedInjectableMetadata,
   ExtractedNgModuleMetadata,
   ExtractedPipeMetadata,
   HostDirectiveMetadata,
   ImportMetadata,
   InputMetadata,
+  MaybeForwardRef,
   ParsedHostBindings,
   QueryMetadata,
   ResolvedResources,
@@ -134,6 +139,89 @@ export function buildR3PipeMetadata(
     pure: extracted.pure,
     isStandalone: extracted.standalone,
   };
+}
+
+/**
+ * Builds the R3InjectableMetadata structure from extracted decorator metadata.
+ *
+ * @param extracted The metadata extracted from the @Injectable decorator
+ * @returns The R3InjectableMetadata ready for compilation
+ */
+export function buildR3InjectableMetadata(
+  extracted: ExtractedInjectableMetadata,
+): R3InjectableMetadata {
+  const type = createR3Reference(extracted.className);
+
+  // Build the base metadata
+  const metadata: R3InjectableMetadata = {
+    name: extracted.className,
+    type,
+    typeArgumentCount: extracted.typeArgumentCount,
+    providedIn: buildMaybeForwardRefExpression(extracted.providedIn),
+  };
+
+  // Add provider configuration if present
+  if (extracted.useClass) {
+    metadata.useClass = buildMaybeForwardRefExpression(extracted.useClass);
+  }
+
+  if (extracted.useFactory) {
+    metadata.useFactory = new o.WrappedNodeExpr(extracted.useFactory);
+  }
+
+  if (extracted.useExisting) {
+    metadata.useExisting = buildMaybeForwardRefExpression(extracted.useExisting);
+  }
+
+  if (extracted.useValue) {
+    metadata.useValue = buildMaybeForwardRefExpression(extracted.useValue);
+  }
+
+  // Build deps array if present
+  if (extracted.deps) {
+    metadata.deps = buildR3DependencyMetadataArray(extracted.deps);
+  }
+
+  return metadata;
+}
+
+/**
+ * Builds a MaybeForwardRefExpression for the Angular compiler from our MaybeForwardRef.
+ *
+ * The Angular compiler expects:
+ * - expression: the Expression (wrapped if needed)
+ * - forwardRef: ForwardRefHandling enum value
+ */
+function buildMaybeForwardRefExpression(maybeRef: MaybeForwardRef | null): {
+  expression: o.Expression;
+  forwardRef: ForwardRefHandling;
+} {
+  if (!maybeRef) {
+    // If no value provided, use null literal
+    return {
+      expression: o.literal(null),
+      forwardRef: ForwardRefHandling.None,
+    };
+  }
+
+  return {
+    expression: new o.WrappedNodeExpr(maybeRef.expression),
+    forwardRef: maybeRef.isForwardRef ? ForwardRefHandling.Unwrapped : ForwardRefHandling.None,
+  };
+}
+
+/**
+ * Builds R3DependencyMetadata array from extracted dependency metadata.
+ */
+function buildR3DependencyMetadataArray(deps: DependencyMetadata[]): R3DependencyMetadata[] {
+  return deps.map((dep) => ({
+    token: new o.WrappedNodeExpr(dep.token),
+    attributeNameType: null, // @Attribute is not commonly used in deps array
+    host: dep.host,
+    optional: dep.optional,
+    self: dep.self,
+    skipSelf: dep.skipSelf,
+  }));
 }
 
 /**

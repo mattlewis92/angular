@@ -1,6 +1,7 @@
 import {
   compileComponentFromMetadata,
   compileDirectiveFromMetadata,
+  compileInjectable,
   compileInjector,
   compileNgModule,
   compilePipeFromMetadata,
@@ -11,6 +12,7 @@ import {
 import {
   buildR3ComponentMetadata,
   buildR3DirectiveMetadata,
+  buildR3InjectableMetadata,
   buildR3InjectorMetadata,
   buildR3NgModuleMetadata,
   buildR3PipeMetadata,
@@ -20,6 +22,7 @@ import {
   DEFINITION_NAMES,
   ExtractedComponentMetadata,
   ExtractedDirectiveMetadata,
+  ExtractedInjectableMetadata,
   ExtractedNgModuleMetadata,
   ExtractedPipeMetadata,
   ResolvedResources,
@@ -96,6 +99,31 @@ export function compileSinglePipe(
     decoratorType: 'Pipe',
     definitionExpr: compiledPipe.expression,
     definitionName: DEFINITION_NAMES.Pipe,
+    decoratorArgsNode: extracted.decoratorArgsNode,
+    deferredImportNames: new Set(),
+  };
+}
+
+/**
+ * Compiles a single extracted injectable and returns the compiled data.
+ *
+ * The compileInjectable function generates the ɵprov definition which tells
+ * Angular how to create instances of the injectable class.
+ *
+ * @param extracted The metadata extracted from the @Injectable decorator
+ * @returns The compiled class data with ɵprov definition
+ */
+export function compileSingleInjectable(extracted: ExtractedInjectableMetadata): CompiledClassData {
+  const metadata = buildR3InjectableMetadata(extracted);
+
+  // Compile the injectable - resolveForwardRefs=true enables forwardRef support
+  const compiledInjectable = compileInjectable(metadata, /* resolveForwardRefs */ true);
+
+  return {
+    className: extracted.className,
+    decoratorType: 'Injectable',
+    definitionExpr: compiledInjectable.expression,
+    definitionName: DEFINITION_NAMES.Injectable, // 'ɵprov'
     decoratorArgsNode: extracted.decoratorArgsNode,
     deferredImportNames: new Set(),
   };

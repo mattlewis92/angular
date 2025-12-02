@@ -374,3 +374,82 @@ export interface ResolvedResources {
   /** Resolved style file paths (absolute paths of external styles that were loaded) */
   styleUrls: string[];
 }
+
+/**
+ * Metadata for a dependency in the deps array of @Injectable.
+ */
+export interface DependencyMetadata {
+  /** The injection token expression */
+  token: t.Expression;
+  /** Whether the dependency has @Optional() decorator */
+  optional: boolean;
+  /** Whether the dependency has @Self() decorator */
+  self: boolean;
+  /** Whether the dependency has @SkipSelf() decorator */
+  skipSelf: boolean;
+  /** Whether the dependency has @Host() decorator */
+  host: boolean;
+}
+
+/**
+ * Represents a value that may be wrapped in forwardRef().
+ * Used for providedIn, useClass, useExisting, useValue in Injectable.
+ */
+export interface MaybeForwardRef<T = t.Expression> {
+  /** The expression (unwrapped if it was a forwardRef) */
+  expression: T;
+  /** Whether the expression was wrapped in forwardRef() */
+  isForwardRef: boolean;
+}
+
+/**
+ * Metadata extracted from the @Injectable decorator.
+ */
+export interface ExtractedInjectableMetadata {
+  /** The class name of the injectable */
+  className: string;
+  /** Location of the class identifier for source span */
+  classLocation: {line: number; column: number} | null;
+  /** Number of generic type parameters on the class */
+  typeArgumentCount: number;
+  /** The decorator arguments Babel AST node (for setClassMetadata) */
+  decoratorArgsNode: t.ObjectExpression | null;
+
+  // Injectable-specific fields
+  /**
+   * Where this injectable should be provided.
+   * - 'root' | 'platform' | 'any' - string literal
+   * - null - not provided anywhere (must be added to providers array)
+   * - Expression - provided in a specific NgModule (may be forwardRef wrapped)
+   */
+  providedIn: MaybeForwardRef | null;
+
+  /**
+   * useClass - an alternative class to instantiate.
+   * If the useClass matches the injectable class itself, it's treated as default.
+   */
+  useClass: MaybeForwardRef | null;
+
+  /**
+   * useFactory - a factory function to call.
+   * When specified with deps, the deps are passed as arguments.
+   */
+  useFactory: t.Expression | null;
+
+  /**
+   * useExisting - alias to an existing token.
+   * At runtime, inject(useExisting) will be called.
+   */
+  useExisting: MaybeForwardRef | null;
+
+  /**
+   * useValue - a literal value to provide.
+   */
+  useValue: MaybeForwardRef | null;
+
+  /**
+   * Explicit dependencies for useClass or useFactory.
+   * Only valid when useClass or useFactory is specified.
+   */
+  deps: DependencyMetadata[] | null;
+}

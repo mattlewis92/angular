@@ -242,6 +242,13 @@ async function main(): Promise<void> {
   );
   allPassed = allPassed && forwardRefResult;
 
+  // Test full metadata Injectable (comprehensive Injectable metadata extraction)
+  const injectableResult = await testComponent(
+    path.join(testDir, 'full-metadata.injectable.ts'),
+    'Full Metadata Injectable',
+  );
+  allPassed = allPassed && injectableResult;
+
   if (!allPassed) {
     process.exit(1);
   }

@@ -4,13 +4,16 @@ import traverse, {NodePath} from '@babel/traverse';
 import * as t from '@babel/types';
 
 import {
+  DependencyMetadata,
   ExtractedComponentMetadata,
   ExtractedDirectiveMetadata,
+  ExtractedInjectableMetadata,
   ExtractedNgModuleMetadata,
   ExtractedPipeMetadata,
   HostDirectiveMetadata,
   ImportMetadata,
   InputMetadata,
+  MaybeForwardRef,
   ParsedHostBindings,
   QueryMetadata,
   SchemaType,
@@ -228,6 +231,271 @@ function findPipeDecorator(node: t.ClassDeclaration): t.CallExpression | null {
       }
     }
   }
+  return null;
+}
+
+/**
+ * Parses all @Injectable decorators from a pre-parsed Babel AST and extracts metadata.
+ *
+ * @param ast The Babel AST (from @babel/parser)
+ * @param sourceCode The original source code (unused for injectables, kept for consistency)
+ * @returns Array of extracted injectable metadata for all @Injectable decorators found
+ */
+export function parseInjectableDecorators(
+  ast: ParseResult<t.File>,
+  sourceCode: string,
+): ExtractedInjectableMetadata[] {
+  const results: ExtractedInjectableMetadata[] = [];
+
+  // Build a map of imported identifiers to their module paths
+  // This is needed for resolving forwardRef class references
+  const importMap = buildImportMap(ast);
+
+  // Walk the AST to find all classes with @Injectable decorator
+  traverse(ast, {
+    ClassDeclaration(path: NodePath<t.ClassDeclaration>) {
+      if (!path.node.id) return;
+
+      const injectableDecorator = findInjectableDecorator(path.node);
+      if (injectableDecorator) {
+        results.push(
+          extractInjectableMetadata(path.node.id.name, injectableDecorator, path.node, importMap),
+        );
+      }
+    },
+  });
+
+  return results;
+}
+
+/**
+ * Finds the @Injectable decorator on a class declaration.
+ */
+function findInjectableDecorator(node: t.ClassDeclaration): t.CallExpression | null {
+  const decorators = node.decorators;
+  if (!decorators) return null;
+
+  for (const decorator of decorators) {
+    if (t.isCallExpression(decorator.expression)) {
+      const callExpr = decorator.expression;
+      // Check for direct @Injectable call
+      if (t.isIdentifier(callExpr.callee) && callExpr.callee.name === 'Injectable') {
+        return callExpr;
+      }
+      // Check for namespaced @angular/core.Injectable or ng.Injectable
+      if (t.isMemberExpression(callExpr.callee) && t.isIdentifier(callExpr.callee.property)) {
+        if (callExpr.callee.property.name === 'Injectable') {
+          return callExpr;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Extracts metadata from the @Injectable decorator call expression.
+ */
+function extractInjectableMetadata(
+  className: string,
+  decorator: t.CallExpression,
+  classDecl: t.ClassDeclaration,
+  importMap: Map<string, string>,
+): ExtractedInjectableMetadata {
+  // Extract class-level metadata
+  const typeArgumentCount = getTypeArgumentCount(classDecl);
+  const classLocation = getClassLocation(classDecl);
+
+  const metadata: ExtractedInjectableMetadata = {
+    className,
+    classLocation,
+    typeArgumentCount,
+    decoratorArgsNode: null,
+    // Injectable-specific defaults
+    providedIn: null,
+    useClass: null,
+    useFactory: null,
+    useExisting: null,
+    useValue: null,
+    deps: null,
+  };
+
+  // @Injectable() with no arguments is valid - just marks the class as injectable
+  if (decorator.arguments.length === 0) {
+    return metadata;
+  }
+
+  const arg = decorator.arguments[0];
+  if (!t.isObjectExpression(arg)) {
+    return metadata;
+  }
+
+  // Store the decorator arguments node for setClassMetadata generation
+  metadata.decoratorArgsNode = arg;
+
+  for (const prop of arg.properties) {
+    if (t.isObjectProperty(prop) && t.isIdentifier(prop.key)) {
+      const name = prop.key.name;
+      const value = prop.value;
+
+      switch (name) {
+        case 'providedIn':
+          metadata.providedIn = extractMaybeForwardRef(value, importMap);
+          break;
+        case 'useClass':
+          metadata.useClass = extractMaybeForwardRef(value, importMap);
+          break;
+        case 'useExisting':
+          metadata.useExisting = extractMaybeForwardRef(value, importMap);
+          break;
+        case 'useValue':
+          // useValue is never wrapped in forwardRef, just extract the expression
+          metadata.useValue = {
+            expression: value as t.Expression,
+            isForwardRef: false,
+          };
+          break;
+        case 'useFactory':
+          // useFactory is never wrapped in forwardRef, just extract the expression
+          if (t.isExpression(value)) {
+            metadata.useFactory = value;
+          }
+          break;
+        case 'deps':
+          metadata.deps = parseDepsArray(value, importMap);
+          break;
+      }
+    }
+  }
+
+  return metadata;
+}
+
+/**
+ * Extracts a value that may be wrapped in forwardRef().
+ * Returns both the unwrapped expression and whether it was wrapped.
+ */
+function extractMaybeForwardRef(
+  node: t.Node,
+  importMap: Map<string, string>,
+): MaybeForwardRef | null {
+  if (!t.isExpression(node)) return null;
+
+  // Check for forwardRef() wrapper
+  const unwrapped = unwrapForwardRef(node);
+  if (unwrapped) {
+    return {
+      expression: unwrapped as t.Expression,
+      isForwardRef: true,
+    };
+  }
+
+  // Not wrapped in forwardRef - return as-is
+  return {
+    expression: node as t.Expression,
+    isForwardRef: false,
+  };
+}
+
+/**
+ * Parses the deps array from @Injectable.
+ * Handles:
+ * - Simple tokens: [SomeService]
+ * - Decorator tuples: [[new Optional(), SomeService]]
+ * - Multiple decorators: [[new Optional(), new SkipSelf(), SomeService]]
+ * - Inject decorator: [[new Inject(TOKEN)]]
+ */
+function parseDepsArray(node: t.Node, importMap: Map<string, string>): DependencyMetadata[] | null {
+  if (!t.isArrayExpression(node)) return null;
+
+  const deps: DependencyMetadata[] = [];
+
+  for (const element of node.elements) {
+    if (!element) continue;
+
+    const dep = parseDependency(element, importMap);
+    if (dep) {
+      deps.push(dep);
+    }
+  }
+
+  return deps.length > 0 ? deps : null;
+}
+
+/**
+ * Parses a single dependency from the deps array.
+ * Can be either a simple token or an array with decorators.
+ */
+function parseDependency(node: t.Node, importMap: Map<string, string>): DependencyMetadata | null {
+  // Simple token: SomeService
+  if (t.isIdentifier(node)) {
+    return {
+      token: node,
+      optional: false,
+      self: false,
+      skipSelf: false,
+      host: false,
+    };
+  }
+
+  // Array with decorators: [new Optional(), SomeService] or [new Inject(TOKEN)]
+  if (t.isArrayExpression(node)) {
+    let token: t.Expression | null = null;
+    let optional = false;
+    let self = false;
+    let skipSelf = false;
+    let host = false;
+
+    for (const element of node.elements) {
+      if (!element) continue;
+
+      // Check for decorator instances: new Optional(), new Self(), etc.
+      if (t.isNewExpression(element)) {
+        const callee = element.callee;
+        let decoratorName: string | null = null;
+
+        if (t.isIdentifier(callee)) {
+          decoratorName = callee.name;
+        } else if (t.isMemberExpression(callee) && t.isIdentifier(callee.property)) {
+          // Handle core.Optional, etc.
+          decoratorName = callee.property.name;
+        }
+
+        if (decoratorName) {
+          switch (decoratorName) {
+            case 'Optional':
+              optional = true;
+              break;
+            case 'Self':
+              self = true;
+              break;
+            case 'SkipSelf':
+              skipSelf = true;
+              break;
+            case 'Host':
+              host = true;
+              break;
+            case 'Inject':
+              // new Inject(TOKEN) - the first argument is the token
+              if (element.arguments.length > 0 && t.isExpression(element.arguments[0])) {
+                token = element.arguments[0] as t.Expression;
+              }
+              break;
+          }
+        }
+      }
+
+      // Check for plain identifier (the actual token)
+      if (t.isIdentifier(element)) {
+        token = element;
+      }
+    }
+
+    if (token) {
+      return {token, optional, self, skipSelf, host};
+    }
+  }
+
   return null;
 }
 
