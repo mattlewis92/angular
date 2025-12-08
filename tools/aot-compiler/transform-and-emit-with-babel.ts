@@ -211,64 +211,146 @@ export function transformAndEmitWithBabel(
         }
 
         // Create static block for ɵfac with named function to match Angular compiler output
-        // Generate injection arguments for constructor dependencies
-        const ctorDeps = classData.constructorDeps || [];
-        const injectionArgs = ctorDeps.map((dep) => {
-          // Calculate injection flags
-          // Host=1, Self=2, SkipSelf=4, Optional=8, ForPipe=16
-          let flags =
-            (dep.host ? 1 : 0) |
-            (dep.self ? 2 : 0) |
-            (dep.skipSelf ? 4 : 0) |
-            (dep.optional ? 8 : 0);
+        let factoryStaticBlock: t.ClassBody['body'][number];
 
-          // ForPipe flag (16) is ALWAYS added for pipes
-          if (classData.decoratorType === 'Pipe') {
-            flags |= 16;
-          }
+        // Check if we should use inherited factory pattern
+        // constructorDeps === null means class extends another without explicit constructor
+        if (classData.constructorDeps === null) {
+          // Generate inherited factory pattern:
+          // static ɵfac = /*@__PURE__*/ (() => {
+          //   let ɵClassName_BaseFactory;
+          //   return function ClassName_Factory(__ngFactoryType__) {
+          //     return (ɵClassName_BaseFactory ||
+          //             (ɵClassName_BaseFactory = i0.ɵɵgetInheritedFactory(ClassName)))
+          //            (__ngFactoryType__ || ClassName);
+          //   };
+          // })();
+          const baseFactoryVarName = `ɵ${currentClassName}_BaseFactory`;
 
-          // Use ɵɵdirectiveInject for pipes/directives/components, ɵɵinject for injectables
-          const injectFn = ['Pipe', 'Directive', 'Component'].includes(classData.decoratorType)
-            ? 'ɵɵdirectiveInject'
-            : 'ɵɵinject';
-
-          // Include flags argument if any flags are set (including ForPipe for pipes)
-          const args: t.Expression[] = [t.identifier(dep.token)];
-          if (flags !== 0) {
-            args.push(t.numericLiteral(flags));
-          }
-
-          return t.callExpression(
-            t.memberExpression(t.identifier('i0'), t.identifier(injectFn)),
-            args,
+          // Build: ɵClassName_BaseFactory = i0.ɵɵgetInheritedFactory(ClassName)
+          const getInheritedFactoryCall = t.callExpression(
+            t.memberExpression(t.identifier('i0'), t.identifier('ɵɵgetInheritedFactory')),
+            [t.identifier(currentClassName)],
           );
-        });
 
-        const factoryFunction = t.functionExpression(
-          t.identifier(`${currentClassName}_Factory`),
-          [t.identifier('__ngFactoryType__')],
-          t.blockStatement([
-            t.returnStatement(
-              t.newExpression(
-                t.logicalExpression(
-                  '||',
-                  t.identifier('__ngFactoryType__'),
-                  t.identifier(currentClassName),
-                ),
-                injectionArgs,
+          // Build: (ɵClassName_BaseFactory || (ɵClassName_BaseFactory = i0.ɵɵgetInheritedFactory(...)))
+          const baseFactoryExpr = t.logicalExpression(
+            '||',
+            t.identifier(baseFactoryVarName),
+            t.assignmentExpression('=', t.identifier(baseFactoryVarName), getInheritedFactoryCall),
+          );
+
+          // Build: baseFactory(__ngFactoryType__ || ClassName)
+          const factoryCallExpr = t.callExpression(baseFactoryExpr, [
+            t.logicalExpression(
+              '||',
+              t.identifier('__ngFactoryType__'),
+              t.identifier(currentClassName),
+            ),
+          ]);
+
+          // Build the inner factory function
+          const innerFactoryFn = t.functionExpression(
+            t.identifier(`${currentClassName}_Factory`),
+            [t.identifier('__ngFactoryType__')],
+            t.blockStatement([t.returnStatement(factoryCallExpr)]),
+          );
+
+          // Build the IIFE: (() => { let baseFactory; return function... })()
+          const iife = t.callExpression(
+            t.arrowFunctionExpression(
+              [],
+              t.blockStatement([
+                t.variableDeclaration('let', [
+                  t.variableDeclarator(t.identifier(baseFactoryVarName)),
+                ]),
+                t.returnStatement(innerFactoryFn),
+              ]),
+            ),
+            [],
+          );
+
+          // Add /*@__PURE__*/ comment for tree-shaking
+          t.addComment(iife, 'leading', '@__PURE__');
+
+          factoryStaticBlock = t.staticBlock([
+            t.expressionStatement(
+              t.assignmentExpression(
+                '=',
+                t.memberExpression(t.thisExpression(), t.identifier('ɵfac')),
+                iife,
               ),
             ),
-          ]),
-        );
-        const factoryStaticBlock = t.staticBlock([
-          t.expressionStatement(
-            t.assignmentExpression(
-              '=',
-              t.memberExpression(t.thisExpression(), t.identifier('ɵfac')),
-              factoryFunction,
+          ]);
+        } else {
+          // Generate direct factory with injection arguments
+          const ctorDeps = classData.constructorDeps || [];
+          const injectionArgs = ctorDeps.map((dep) => {
+            // Handle @Attribute decorator - generates ɵɵinjectAttribute call
+            if (dep.attribute !== null) {
+              return t.callExpression(
+                t.memberExpression(t.identifier('i0'), t.identifier('ɵɵinjectAttribute')),
+                [t.stringLiteral(dep.attribute)],
+              );
+            }
+
+            // Calculate injection flags
+            // Host=1, Self=2, SkipSelf=4, Optional=8, ForPipe=16
+            let flags =
+              (dep.host ? 1 : 0) |
+              (dep.self ? 2 : 0) |
+              (dep.skipSelf ? 4 : 0) |
+              (dep.optional ? 8 : 0);
+
+            // ForPipe flag (16) is ALWAYS added for pipes
+            if (classData.decoratorType === 'Pipe') {
+              flags |= 16;
+            }
+
+            // Use ɵɵdirectiveInject for pipes/directives/components, ɵɵinject for injectables
+            const injectFn = ['Pipe', 'Directive', 'Component'].includes(classData.decoratorType)
+              ? 'ɵɵdirectiveInject'
+              : 'ɵɵinject';
+
+            // Include flags argument if any flags are set (including ForPipe for pipes)
+            const args: t.Expression[] = [t.identifier(dep.token)];
+            if (flags !== 0) {
+              args.push(t.numericLiteral(flags));
+            }
+
+            return t.callExpression(
+              t.memberExpression(t.identifier('i0'), t.identifier(injectFn)),
+              args,
+            );
+          });
+
+          const factoryFunction = t.functionExpression(
+            t.identifier(`${currentClassName}_Factory`),
+            [t.identifier('__ngFactoryType__')],
+            t.blockStatement([
+              t.returnStatement(
+                t.newExpression(
+                  t.logicalExpression(
+                    '||',
+                    t.identifier('__ngFactoryType__'),
+                    t.identifier(currentClassName),
+                  ),
+                  injectionArgs,
+                ),
+              ),
+            ]),
+          );
+
+          factoryStaticBlock = t.staticBlock([
+            t.expressionStatement(
+              t.assignmentExpression(
+                '=',
+                t.memberExpression(t.thisExpression(), t.identifier('ɵfac')),
+                factoryFunction,
+              ),
             ),
-          ),
-        ]);
+          ]);
+        }
 
         // Create static block for the definition (ɵcmp, ɵdir, ɵpipe, ɵprov, ɵmod)
         const defStaticBlock = t.staticBlock([

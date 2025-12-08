@@ -68,8 +68,13 @@ export interface CompiledClassData {
   injectorName?: string;
   /** Side-effect statements like setNgModuleScope (only for NgModule) */
   sideEffectStatements?: import('@angular/compiler').Statement[];
-  /** Constructor dependencies for factory function generation */
-  constructorDeps?: ConstructorDependency[];
+  /**
+   * Constructor dependencies for factory function generation.
+   * - ConstructorDependency[]: explicit dependencies to inject
+   * - null: class extends another class without explicit constructor (use ɵɵgetInheritedFactory)
+   * - undefined: not yet populated
+   */
+  constructorDeps?: ConstructorDependency[] | null;
 }
 
 /**
@@ -86,7 +91,13 @@ export interface ClassTransformData {
   hmrInitializerStmt: t.Statement | null;
   classLineNumber: number;
   resources?: ResolvedResources;
-  constructorDeps?: ConstructorDependency[];
+  /**
+   * Constructor dependencies for factory function generation.
+   * - ConstructorDependency[]: explicit dependencies to inject
+   * - null: class extends another class without explicit constructor (use ɵɵgetInheritedFactory)
+   * - undefined: not yet populated
+   */
+  constructorDeps?: ConstructorDependency[] | null;
 }
 
 /**
@@ -194,8 +205,12 @@ export interface ExtractedDirectiveMetadata {
   providers: t.Expression | null;
   /** Host directives metadata */
   hostDirectives: HostDirectiveMetadata[] | null;
-  /** Constructor dependencies for factory function generation */
-  constructorDeps: ConstructorDependency[];
+  /**
+   * Constructor dependencies for factory function generation.
+   * - ConstructorDependency[]: explicit dependencies to inject
+   * - null: class extends another class without explicit constructor (use ɵɵgetInheritedFactory)
+   */
+  constructorDeps: ConstructorDependency[] | null;
 
   /** @deprecated Use hostBindings instead */
   host: Record<string, string>;
@@ -373,8 +388,12 @@ export interface ExtractedNgModuleMetadata {
   /** True if any array contains forwardRef() wrappers */
   containsForwardDecls: boolean;
 
-  /** Constructor dependencies for factory function generation */
-  constructorDeps: ConstructorDependency[];
+  /**
+   * Constructor dependencies for factory function generation.
+   * - ConstructorDependency[]: explicit dependencies to inject
+   * - null: class extends another class without explicit constructor (use ɵɵgetInheritedFactory)
+   */
+  constructorDeps: ConstructorDependency[] | null;
 }
 
 /**
@@ -397,8 +416,12 @@ export interface ExtractedPipeMetadata {
   pure: boolean;
   /** Whether the pipe is standalone (default: true) */
   standalone: boolean;
-  /** Constructor dependencies for factory function generation */
-  constructorDeps: ConstructorDependency[];
+  /**
+   * Constructor dependencies for factory function generation.
+   * - ConstructorDependency[]: explicit dependencies to inject
+   * - null: class extends another class without explicit constructor (use ɵɵgetInheritedFactory)
+   */
+  constructorDeps: ConstructorDependency[] | null;
 }
 
 /**
@@ -448,6 +471,8 @@ export interface ConstructorDependency {
   self: boolean;
   /** Whether the dependency has @SkipSelf() decorator */
   skipSelf: boolean;
+  /** The attribute name if @Attribute() decorator is used, null otherwise */
+  attribute: string | null;
 }
 
 /**
@@ -512,6 +537,10 @@ export interface ExtractedInjectableMetadata {
    */
   deps: DependencyMetadata[] | null;
 
-  /** Constructor dependencies for factory function generation */
-  constructorDeps: ConstructorDependency[];
+  /**
+   * Constructor dependencies for factory function generation.
+   * - ConstructorDependency[]: explicit dependencies to inject
+   * - null: class extends another class without explicit constructor (use ɵɵgetInheritedFactory)
+   */
+  constructorDeps: ConstructorDependency[] | null;
 }

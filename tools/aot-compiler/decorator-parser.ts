@@ -2154,11 +2154,34 @@ function parseHostDirectiveMapping(node: t.Node): Record<string, string> | null 
 }
 
 /**
+ * Checks if a class has an explicit constructor method.
+ */
+function hasExplicitConstructor(classDecl: t.ClassDeclaration): boolean {
+  for (const member of classDecl.body.body) {
+    if (t.isClassMethod(member) && member.kind === 'constructor') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Extracts constructor dependencies for factory function generation.
  * Returns simplified dependency metadata with string tokens (type names).
- * Handles @Inject, @Optional, @Self, @SkipSelf, and @Host decorators.
+ * Handles @Inject, @Attribute, @Optional, @Self, @SkipSelf, and @Host decorators.
+ *
+ * Returns null when the class uses inheritance (has superClass) but has no
+ * explicit constructor - this signals that the factory should use
+ * ɵɵgetInheritedFactory to delegate to the parent class's factory.
  */
-export function extractConstructorDeps(classDecl: t.ClassDeclaration): ConstructorDependency[] {
+export function extractConstructorDeps(
+  classDecl: t.ClassDeclaration,
+): ConstructorDependency[] | null {
+  // If class extends another class and has no explicit constructor,
+  // return null to signal that we should use ɵɵgetInheritedFactory
+  if (classDecl.superClass && !hasExplicitConstructor(classDecl)) {
+    return null;
+  }
   const deps: ConstructorDependency[] = [];
 
   // Find the constructor method
@@ -2194,13 +2217,14 @@ export function extractConstructorDeps(classDecl: t.ClassDeclaration): Construct
       let self = false;
       let skipSelf = false;
       let host = false;
+      let attribute: string | null = null;
 
       // Process decorators on this parameter
       for (const decorator of paramDecorators) {
         if (!t.isDecorator(decorator)) continue;
         const expr = decorator.expression;
 
-        // Handle @Inject(TOKEN) and qualifier decorators
+        // Handle @Inject(TOKEN), @Attribute('name'), and qualifier decorators
         if (t.isCallExpression(expr) && t.isIdentifier(expr.callee)) {
           const decoratorName = expr.callee.name;
 
@@ -2211,6 +2235,15 @@ export function extractConstructorDeps(classDecl: t.ClassDeclaration): Construct
                 const arg = expr.arguments[0];
                 if (t.isIdentifier(arg)) {
                   token = arg.name;
+                }
+              }
+              break;
+            case 'Attribute':
+              // Extract the attribute name from @Attribute('attrName')
+              if (expr.arguments.length > 0) {
+                const arg = expr.arguments[0];
+                if (t.isStringLiteral(arg)) {
+                  attribute = arg.value;
                 }
               }
               break;
@@ -2248,26 +2281,37 @@ export function extractConstructorDeps(classDecl: t.ClassDeclaration): Construct
         }
       }
 
-      // Get the type annotation as token if no @Inject was used
-      if (!token && paramNode.typeAnnotation) {
+      // Get the type annotation as token if no @Inject was used and not an @Attribute param
+      if (!token && !attribute && paramNode.typeAnnotation) {
         const typeAnnotation = paramNode.typeAnnotation;
-        if (
-          t.isTSTypeAnnotation(typeAnnotation) &&
-          t.isTSTypeReference(typeAnnotation.typeAnnotation) &&
-          t.isIdentifier(typeAnnotation.typeAnnotation.typeName)
-        ) {
-          token = typeAnnotation.typeAnnotation.typeName.name;
+        if (t.isTSTypeAnnotation(typeAnnotation)) {
+          const typeNode = typeAnnotation.typeAnnotation;
+          // Handle simple type reference: SomeService
+          if (t.isTSTypeReference(typeNode) && t.isIdentifier(typeNode.typeName)) {
+            token = typeNode.typeName.name;
+          }
+          // Handle union types: SomeService | null, SomeService | undefined
+          // Extract the first non-null/undefined type reference
+          else if (t.isTSUnionType(typeNode)) {
+            for (const member of typeNode.types) {
+              if (t.isTSTypeReference(member) && t.isIdentifier(member.typeName)) {
+                token = member.typeName.name;
+                break;
+              }
+            }
+          }
         }
       }
 
-      // Only add if we have a token
-      if (token) {
+      // Add dependency if we have a token or an attribute
+      if (token || attribute) {
         deps.push({
-          token,
+          token: token || '', // Empty string for @Attribute deps (token is not used)
           optional,
           self,
           skipSelf,
           host,
+          attribute,
         });
       }
     }

@@ -270,6 +270,13 @@ async function main(): Promise<void> {
   );
   allPassed = allPassed && diResult;
 
+  // Test inheritance support (ɵɵgetInheritedFactory pattern)
+  const inheritanceResult = await testComponent(
+    path.join(testDir, 'inheritance.component.ts'),
+    'Inheritance Support',
+  );
+  allPassed = allPassed && inheritanceResult;
+
   if (!allPassed) {
     process.exit(1);
   }
