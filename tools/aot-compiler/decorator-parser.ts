@@ -4,6 +4,7 @@ import traverse, {NodePath} from '@babel/traverse';
 import * as t from '@babel/types';
 
 import {
+  ConstructorDependency,
   DependencyMetadata,
   ExtractedComponentMetadata,
   ExtractedDirectiveMetadata,
@@ -46,7 +47,13 @@ export function parseComponentDecorators(
       const componentDecorator = findComponentDecorator(path.node);
       if (componentDecorator) {
         results.push(
-          extractMetadata(path.node.id.name, componentDecorator, path.node, sourceCode, importMap),
+          extractComponentMetadata(
+            path.node.id.name,
+            componentDecorator,
+            path.node,
+            sourceCode,
+            importMap,
+          ),
         );
       }
     },
@@ -307,6 +314,7 @@ function extractInjectableMetadata(
   // Extract class-level metadata
   const typeArgumentCount = getTypeArgumentCount(classDecl);
   const classLocation = getClassLocation(classDecl);
+  const constructorDeps = extractConstructorDeps(classDecl);
 
   const metadata: ExtractedInjectableMetadata = {
     className,
@@ -320,6 +328,7 @@ function extractInjectableMetadata(
     useExisting: null,
     useValue: null,
     deps: null,
+    constructorDeps,
   };
 
   // @Injectable() with no arguments is valid - just marks the class as injectable
@@ -513,6 +522,7 @@ function extractPipeMetadata(
   // Extract class-level metadata
   const typeArgumentCount = getTypeArgumentCount(classDecl);
   const classLocation = getClassLocation(classDecl);
+  const constructorDeps = extractConstructorDeps(classDecl);
 
   const metadata: ExtractedPipeMetadata = {
     className,
@@ -523,6 +533,7 @@ function extractPipeMetadata(
     pipeName: '', // Required, will be set from decorator
     pure: true, // Default in Angular
     standalone: true, // Default in modern Angular
+    constructorDeps,
   };
 
   if (decorator.arguments.length === 0) {
@@ -585,6 +596,7 @@ function extractNgModuleMetadata(
   // Extract class-level metadata
   const typeArgumentCount = getTypeArgumentCount(classDecl);
   const classLocation = getClassLocation(classDecl);
+  const constructorDeps = extractConstructorDeps(classDecl);
 
   const metadata: ExtractedNgModuleMetadata = {
     className,
@@ -600,6 +612,7 @@ function extractNgModuleMetadata(
     schemas: [],
     id: null,
     containsForwardDecls: false,
+    constructorDeps,
   };
 
   if (decorator.arguments.length === 0) return metadata;
@@ -801,6 +814,7 @@ function extractDirectiveMetadata(
   const signalOutputs = extractSignalOutputs(classDecl);
   const models = extractModelInputs(classDecl);
   const signalQueries = extractSignalQueries(classDecl);
+  const constructorDeps = extractConstructorDeps(classDecl);
 
   // Extract host binding and listener decorators from class members
   const hostBindingDecorators = extractHostBindingDecorators(classDecl);
@@ -837,6 +851,7 @@ function extractDirectiveMetadata(
     isSignal: false,
     providers: null,
     hostDirectives: null,
+    constructorDeps,
   };
 
   if (decorator.arguments.length === 0) return metadata;
@@ -962,7 +977,7 @@ function findComponentDecorator(node: t.ClassDeclaration): t.CallExpression | nu
 /**
  * Extracts metadata from the @Component decorator call expression.
  */
-function extractMetadata(
+function extractComponentMetadata(
   className: string,
   decorator: t.CallExpression,
   classDecl: t.ClassDeclaration,
@@ -982,6 +997,7 @@ function extractMetadata(
   const signalOutputs = extractSignalOutputs(classDecl);
   const models = extractModelInputs(classDecl);
   const signalQueries = extractSignalQueries(classDecl);
+  const constructorDeps = extractConstructorDeps(classDecl);
 
   // Extract host binding and listener decorators from class members
   const hostBindingDecorators = extractHostBindingDecorators(classDecl);
@@ -1032,6 +1048,7 @@ function extractMetadata(
     animations: null,
     hostDirectives: null,
     containsForwardDecls: false,
+    constructorDeps,
   };
 
   if (decorator.arguments.length === 0) return metadata;
@@ -2024,116 +2041,6 @@ function extractHostListenerDecorators(classDecl: t.ClassDeclaration): Record<st
 }
 
 /**
- * Extracts constructor parameter dependencies with their DI decorators.
- * Handles @Inject, @Optional, @Self, @SkipSelf, @Host, and @Attribute.
- */
-export function extractConstructorDependencies(
-  classDecl: t.ClassDeclaration,
-): DependencyMetadata[] {
-  const dependencies: DependencyMetadata[] = [];
-
-  // Find the constructor method
-  for (const member of classDecl.body.body) {
-    if (!t.isClassMethod(member) || member.kind !== 'constructor') continue;
-
-    // Parse each parameter
-    for (const param of member.params) {
-      let paramNode: t.Identifier | t.TSParameterProperty | null = null;
-      let paramDecorators: t.Decorator[] = [];
-
-      // Handle TSParameterProperty (constructor parameter property)
-      if (t.isTSParameterProperty(param)) {
-        paramDecorators = (param.decorators as t.Decorator[]) || [];
-        if (t.isIdentifier(param.parameter)) {
-          paramNode = param.parameter;
-        } else if (t.isAssignmentPattern(param.parameter) && t.isIdentifier(param.parameter.left)) {
-          paramNode = param.parameter.left;
-        }
-      } else if (t.isIdentifier(param)) {
-        paramNode = param;
-        paramDecorators = (param.decorators as t.Decorator[]) || [];
-      } else if (t.isAssignmentPattern(param) && t.isIdentifier(param.left)) {
-        paramNode = param.left;
-        paramDecorators = (param.decorators as t.Decorator[]) || [];
-      }
-
-      if (!paramNode) continue;
-
-      // Initialize dependency metadata
-      let token: t.Expression = paramNode;
-      let optional = false;
-      let self = false;
-      let skipSelf = false;
-      let host = false;
-      let attribute: string | null = null;
-
-      // Process decorators on this parameter
-      for (const decorator of paramDecorators) {
-        if (!t.isDecorator(decorator)) continue;
-        const expr = decorator.expression;
-
-        // Handle @Inject(TOKEN)
-        if (t.isCallExpression(expr) && t.isIdentifier(expr.callee)) {
-          const decoratorName = expr.callee.name;
-
-          switch (decoratorName) {
-            case 'Inject':
-              if (expr.arguments.length > 0 && t.isExpression(expr.arguments[0])) {
-                token = expr.arguments[0] as t.Expression;
-              }
-              break;
-            case 'Attribute':
-              if (expr.arguments.length > 0 && t.isStringLiteral(expr.arguments[0])) {
-                attribute = expr.arguments[0].value;
-              }
-              break;
-            case 'Optional':
-              optional = true;
-              break;
-            case 'Self':
-              self = true;
-              break;
-            case 'SkipSelf':
-              skipSelf = true;
-              break;
-            case 'Host':
-              host = true;
-              break;
-          }
-        }
-      }
-
-      // Get the type annotation as token if no @Inject was used and we have a type
-      if (paramNode === token && paramNode.typeAnnotation) {
-        const typeAnnotation = paramNode.typeAnnotation;
-        if (
-          t.isTSTypeAnnotation(typeAnnotation) &&
-          t.isTSTypeReference(typeAnnotation.typeAnnotation) &&
-          t.isIdentifier(typeAnnotation.typeAnnotation.typeName)
-        ) {
-          // Use the type name as the token
-          token = t.identifier(typeAnnotation.typeAnnotation.typeName.name);
-        }
-      }
-
-      dependencies.push({
-        token,
-        optional,
-        self,
-        skipSelf,
-        host,
-        attribute,
-      });
-    }
-
-    // Only process the first constructor found
-    break;
-  }
-
-  return dependencies;
-}
-
-/**
  * Extracts host directives from the hostDirectives array.
  */
 function extractHostDirectives(
@@ -2244,4 +2151,130 @@ function parseHostDirectiveMapping(node: t.Node): Record<string, string> | null 
   }
 
   return Object.keys(result).length > 0 ? result : null;
+}
+
+/**
+ * Extracts constructor dependencies for factory function generation.
+ * Returns simplified dependency metadata with string tokens (type names).
+ * Handles @Inject, @Optional, @Self, @SkipSelf, and @Host decorators.
+ */
+export function extractConstructorDeps(classDecl: t.ClassDeclaration): ConstructorDependency[] {
+  const deps: ConstructorDependency[] = [];
+
+  // Find the constructor method
+  for (const member of classDecl.body.body) {
+    if (!t.isClassMethod(member) || member.kind !== 'constructor') continue;
+
+    // Parse each parameter
+    for (const param of member.params) {
+      let paramNode: t.Identifier | null = null;
+      let paramDecorators: t.Decorator[] = [];
+
+      // Handle TSParameterProperty (constructor parameter property like `private readonly foo: Foo`)
+      if (t.isTSParameterProperty(param)) {
+        paramDecorators = (param.decorators as t.Decorator[]) || [];
+        if (t.isIdentifier(param.parameter)) {
+          paramNode = param.parameter;
+        } else if (t.isAssignmentPattern(param.parameter) && t.isIdentifier(param.parameter.left)) {
+          paramNode = param.parameter.left;
+        }
+      } else if (t.isIdentifier(param)) {
+        paramNode = param;
+        paramDecorators = (param.decorators as t.Decorator[]) || [];
+      } else if (t.isAssignmentPattern(param) && t.isIdentifier(param.left)) {
+        paramNode = param.left;
+        paramDecorators = (param.decorators as t.Decorator[]) || [];
+      }
+
+      if (!paramNode) continue;
+
+      // Initialize dependency metadata
+      let token: string | null = null;
+      let optional = false;
+      let self = false;
+      let skipSelf = false;
+      let host = false;
+
+      // Process decorators on this parameter
+      for (const decorator of paramDecorators) {
+        if (!t.isDecorator(decorator)) continue;
+        const expr = decorator.expression;
+
+        // Handle @Inject(TOKEN) and qualifier decorators
+        if (t.isCallExpression(expr) && t.isIdentifier(expr.callee)) {
+          const decoratorName = expr.callee.name;
+
+          switch (decoratorName) {
+            case 'Inject':
+              // Extract the token from @Inject(TokenClass)
+              if (expr.arguments.length > 0) {
+                const arg = expr.arguments[0];
+                if (t.isIdentifier(arg)) {
+                  token = arg.name;
+                }
+              }
+              break;
+            case 'Optional':
+              optional = true;
+              break;
+            case 'Self':
+              self = true;
+              break;
+            case 'SkipSelf':
+              skipSelf = true;
+              break;
+            case 'Host':
+              host = true;
+              break;
+          }
+        }
+
+        // Handle decorator without parens: @Optional, @Self, etc.
+        if (t.isIdentifier(expr)) {
+          switch (expr.name) {
+            case 'Optional':
+              optional = true;
+              break;
+            case 'Self':
+              self = true;
+              break;
+            case 'SkipSelf':
+              skipSelf = true;
+              break;
+            case 'Host':
+              host = true;
+              break;
+          }
+        }
+      }
+
+      // Get the type annotation as token if no @Inject was used
+      if (!token && paramNode.typeAnnotation) {
+        const typeAnnotation = paramNode.typeAnnotation;
+        if (
+          t.isTSTypeAnnotation(typeAnnotation) &&
+          t.isTSTypeReference(typeAnnotation.typeAnnotation) &&
+          t.isIdentifier(typeAnnotation.typeAnnotation.typeName)
+        ) {
+          token = typeAnnotation.typeAnnotation.typeName.name;
+        }
+      }
+
+      // Only add if we have a token
+      if (token) {
+        deps.push({
+          token,
+          optional,
+          self,
+          skipSelf,
+          host,
+        });
+      }
+    }
+
+    // Only process the first constructor found
+    break;
+  }
+
+  return deps;
 }

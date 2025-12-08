@@ -146,6 +146,7 @@ export function transformAndEmitWithBabel(
       hmrInitializerStmt,
       classLineNumber,
       resources,
+      constructorDeps: compiled.constructorDeps,
       // NgModule-specific
       injectorExpr,
       injectorName,
@@ -210,6 +211,39 @@ export function transformAndEmitWithBabel(
         }
 
         // Create static block for ɵfac with named function to match Angular compiler output
+        // Generate injection arguments for constructor dependencies
+        const ctorDeps = classData.constructorDeps || [];
+        const injectionArgs = ctorDeps.map((dep) => {
+          // Calculate injection flags
+          // Host=1, Self=2, SkipSelf=4, Optional=8, ForPipe=16
+          let flags =
+            (dep.host ? 1 : 0) |
+            (dep.self ? 2 : 0) |
+            (dep.skipSelf ? 4 : 0) |
+            (dep.optional ? 8 : 0);
+
+          // ForPipe flag (16) is ALWAYS added for pipes
+          if (classData.decoratorType === 'Pipe') {
+            flags |= 16;
+          }
+
+          // Use ɵɵdirectiveInject for pipes/directives/components, ɵɵinject for injectables
+          const injectFn = ['Pipe', 'Directive', 'Component'].includes(classData.decoratorType)
+            ? 'ɵɵdirectiveInject'
+            : 'ɵɵinject';
+
+          // Include flags argument if any flags are set (including ForPipe for pipes)
+          const args: t.Expression[] = [t.identifier(dep.token)];
+          if (flags !== 0) {
+            args.push(t.numericLiteral(flags));
+          }
+
+          return t.callExpression(
+            t.memberExpression(t.identifier('i0'), t.identifier(injectFn)),
+            args,
+          );
+        });
+
         const factoryFunction = t.functionExpression(
           t.identifier(`${currentClassName}_Factory`),
           [t.identifier('__ngFactoryType__')],
@@ -221,7 +255,7 @@ export function transformAndEmitWithBabel(
                   t.identifier('__ngFactoryType__'),
                   t.identifier(currentClassName),
                 ),
-                [],
+                injectionArgs,
               ),
             ),
           ]),

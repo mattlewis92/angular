@@ -68,6 +68,8 @@ export interface CompiledClassData {
   injectorName?: string;
   /** Side-effect statements like setNgModuleScope (only for NgModule) */
   sideEffectStatements?: import('@angular/compiler').Statement[];
+  /** Constructor dependencies for factory function generation */
+  constructorDeps?: ConstructorDependency[];
 }
 
 /**
@@ -84,6 +86,7 @@ export interface ClassTransformData {
   hmrInitializerStmt: t.Statement | null;
   classLineNumber: number;
   resources?: ResolvedResources;
+  constructorDeps?: ConstructorDependency[];
 }
 
 /**
@@ -191,6 +194,8 @@ export interface ExtractedDirectiveMetadata {
   providers: t.Expression | null;
   /** Host directives metadata */
   hostDirectives: HostDirectiveMetadata[] | null;
+  /** Constructor dependencies for factory function generation */
+  constructorDeps: ConstructorDependency[];
 
   /** @deprecated Use hostBindings instead */
   host: Record<string, string>;
@@ -367,6 +372,9 @@ export interface ExtractedNgModuleMetadata {
 
   /** True if any array contains forwardRef() wrappers */
   containsForwardDecls: boolean;
+
+  /** Constructor dependencies for factory function generation */
+  constructorDeps: ConstructorDependency[];
 }
 
 /**
@@ -389,6 +397,8 @@ export interface ExtractedPipeMetadata {
   pure: boolean;
   /** Whether the pipe is standalone (default: true) */
   standalone: boolean;
+  /** Constructor dependencies for factory function generation */
+  constructorDeps: ConstructorDependency[];
 }
 
 /**
@@ -421,6 +431,23 @@ export interface DependencyMetadata {
   host: boolean;
   /** The attribute name if @Attribute() decorator is used, null otherwise */
   attribute: string | null;
+}
+
+/**
+ * Metadata for a constructor dependency to be injected.
+ * Used for generating factory functions with ɵɵdirectiveInject/ɵɵinject calls.
+ */
+export interface ConstructorDependency {
+  /** The token type name to inject (e.g., 'DomSanitizer') */
+  token: string;
+  /** Whether the dependency has @Host() decorator */
+  host: boolean;
+  /** Whether the dependency has @Optional() decorator */
+  optional: boolean;
+  /** Whether the dependency has @Self() decorator */
+  self: boolean;
+  /** Whether the dependency has @SkipSelf() decorator */
+  skipSelf: boolean;
 }
 
 /**
@@ -484,4 +511,7 @@ export interface ExtractedInjectableMetadata {
    * Only valid when useClass or useFactory is specified.
    */
   deps: DependencyMetadata[] | null;
+
+  /** Constructor dependencies for factory function generation */
+  constructorDeps: ConstructorDependency[];
 }

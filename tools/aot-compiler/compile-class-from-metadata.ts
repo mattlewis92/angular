@@ -59,6 +59,7 @@ export async function compileComponentClass(
     deferredImportNames,
     resources,
     deferResolvedFilePaths,
+    constructorDeps: extracted.constructorDeps,
   };
 }
 
@@ -81,6 +82,7 @@ export function compileDirectiveClass(
     definitionName: DEFINITION_NAMES.Directive,
     decoratorArgsNode: extracted.decoratorArgsNode,
     deferredImportNames: new Set(),
+    constructorDeps: extracted.constructorDeps,
   };
 }
 
@@ -101,6 +103,7 @@ export function compilePipeClass(
     definitionName: DEFINITION_NAMES.Pipe,
     decoratorArgsNode: extracted.decoratorArgsNode,
     deferredImportNames: new Set(),
+    constructorDeps: extracted.constructorDeps,
   };
 }
 
@@ -126,6 +129,7 @@ export function compileInjectableClass(extracted: ExtractedInjectableMetadata): 
     definitionName: DEFINITION_NAMES.Injectable, // 'ɵprov'
     decoratorArgsNode: extracted.decoratorArgsNode,
     deferredImportNames: new Set(),
+    constructorDeps: extracted.constructorDeps,
   };
 }
 
@@ -215,6 +219,7 @@ export function compileNgModuleClass(
     definitionName: DEFINITION_NAMES.NgModule, // 'ɵmod'
     decoratorArgsNode: extracted.decoratorArgsNode,
     deferredImportNames: new Set(),
+    constructorDeps: extracted.constructorDeps,
     // NgModule-specific fields
     injectorExpr: injectorResult.expression,
     injectorName: 'ɵinj',
