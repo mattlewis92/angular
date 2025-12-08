@@ -57,4 +57,9 @@ export class HostDecoratorsComponent {
   @HostListener('mouseleave') onMouseLeave() {
     console.log('Mouse left');
   }
+
+  @HostListener('document:keyup.esc')
+  close(): void {
+    console.log('Escape key pressed');
+  }
 }

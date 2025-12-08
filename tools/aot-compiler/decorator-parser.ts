@@ -1966,8 +1966,8 @@ function extractHostBindingDecorators(classDecl: t.ClassDeclaration): {
         // Attribute binding: @HostBinding('attr.role') -> [attr.role]="propName"
         attributes[bindingTarget] = propName;
       } else {
-        // Property binding: @HostBinding('class.active') -> [class.active]="propName"
-        properties[`[${bindingTarget}]`] = propName;
+        // Property binding: @HostBinding('class.active') -> properties['class.active'] = 'propName'
+        properties[bindingTarget] = propName;
       }
     }
   }
@@ -2015,8 +2015,8 @@ function extractHostListenerDecorators(classDecl: t.ClassDeclaration): Record<st
       // Build the handler expression
       const handlerExpr = argsString ? `${methodName}(${argsString})` : `${methodName}()`;
 
-      // Store as (eventName)="handler(args)"
-      listeners[`(${eventName})`] = handlerExpr;
+      // Store as eventName -> handler(args)
+      listeners[eventName] = handlerExpr;
     }
   }
 
