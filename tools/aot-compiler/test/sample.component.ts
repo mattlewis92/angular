@@ -1,16 +1,21 @@
 import {Component, ViewEncapsulation} from '@angular/core';
+import {ShoutPipe} from './shout.pipe';
+import {HighlightDirective} from './highlight.directive';
+import {CardComponent} from './card.component';
+import {DeclarationsOnlyModule} from './full-metadata.module';
 
 @Component({
   selector: 'app-sample',
   template: `
     <div class="container">
-      <h1>Hello, {{ name }}!</h1>
-      <p>Count: {{ count }}</p>
+      <h1>Hello, {{ name | shout }}!</h1>
+      <p appHighlight>Count: {{ count }}</p>
       <button (click)="increment()">Increment</button>
       @if (count > 5) {
         <p class="warning">Count is high!</p>
       }
     </div>
+    <app-card />
   `,
   styles: [
     `
@@ -25,6 +30,7 @@ import {Component, ViewEncapsulation} from '@angular/core';
   ],
   standalone: true,
   encapsulation: ViewEncapsulation.Emulated,
+  imports: [ShoutPipe, HighlightDirective, CardComponent, DeclarationsOnlyModule],
 })
 export class SampleComponent {
   name = 'World';

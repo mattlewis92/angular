@@ -25,6 +25,7 @@ import {
   R3Reference,
   R3SelectorScopeMode,
   R3TemplateDependency,
+  R3TemplateDependencyKind,
   ReadVarExpr,
   RecursiveAstVisitor,
   TmplAstBoundAttribute,
@@ -352,9 +353,14 @@ export async function buildR3ComponentMetadata(
         preserveWhitespaces: extracted.preserveWhitespaces,
       },
 
-      // Declarations (empty for standalone components without imports)
-      declarations: [],
-      declarationListEmitMode: DeclarationListEmitMode.Direct,
+      // Declarations - component's imports converted to R3TemplateDependency
+      declarations: extracted.imports.map((imp) => ({
+        kind: R3TemplateDependencyKind.Directive,
+        type: new ReadVarExpr(imp.name),
+      })),
+      declarationListEmitMode: extracted.containsForwardDecls
+        ? DeclarationListEmitMode.Closure
+        : DeclarationListEmitMode.Direct,
       hasDirectiveDependencies: extracted.imports.length > 0,
 
       // Defer blocks metadata
