@@ -16,6 +16,74 @@ import {buildHmrMetadata, buildSetClassMetadataIIFE} from './hmr-utils';
 import {ClassTransformData, CompilationResult, CompiledClassData} from './types';
 
 /**
+ * Angular field/method decorators that should be removed during AOT compilation.
+ * These decorators are processed during compilation and their metadata is extracted,
+ * so they serve no purpose at runtime.
+ */
+const ANGULAR_MEMBER_DECORATORS = [
+  'Input',
+  'Output',
+  'ViewChild',
+  'ViewChildren',
+  'ContentChild',
+  'ContentChildren',
+  'HostBinding',
+  'HostListener',
+];
+
+/**
+ * Angular constructor parameter decorators that should be removed during AOT compilation.
+ */
+const ANGULAR_PARAM_DECORATORS = ['Inject', 'Optional', 'Self', 'SkipSelf', 'Host', 'Attribute'];
+
+/**
+ * Checks if a decorator is an Angular decorator that should be removed.
+ * Handles both direct calls (@HostBinding('...')) and namespaced calls (core.HostBinding('...')).
+ * Also handles decorators without parentheses (@Optional).
+ */
+function isAngularDecoratorToRemove(node: t.Decorator, decoratorNames: string[]): boolean {
+  const expr = node.expression;
+
+  // Handle call expression: @HostBinding('class.active') or @Inject(TOKEN)
+  if (t.isCallExpression(expr)) {
+    const callee = expr.callee;
+    // Direct call: @HostBinding(...)
+    if (t.isIdentifier(callee)) {
+      return decoratorNames.includes(callee.name);
+    }
+    // Namespaced call: core.HostBinding(...)
+    if (t.isMemberExpression(callee) && t.isIdentifier(callee.property)) {
+      return decoratorNames.includes(callee.property.name);
+    }
+  }
+
+  // Handle identifier without call: @Optional (rare but possible)
+  if (t.isIdentifier(expr)) {
+    return decoratorNames.includes(expr.name);
+  }
+
+  return false;
+}
+
+/**
+ * Strips Angular decorators from a node path that may have decorators.
+ * Works with class properties, methods, accessors, and parameters.
+ */
+function stripAngularDecorators(nodePath: NodePath<t.Node>, decoratorNames: string[]): void {
+  const decorators = nodePath.get('decorators');
+  if (!Array.isArray(decorators)) return;
+
+  for (const decoratorPath of decorators) {
+    if (
+      decoratorPath.isDecorator() &&
+      isAngularDecoratorToRemove(decoratorPath.node, decoratorNames)
+    ) {
+      decoratorPath.remove();
+    }
+  }
+}
+
+/**
  * Uses Babel to transform the AST and emit JavaScript with source maps.
  * Handles multiple decorated classes in a single file.
  */
@@ -206,6 +274,28 @@ export function transformAndEmitWithBabel(
               if (isAngularDecorator) {
                 decoratorPath.remove();
               }
+            }
+          }
+        }
+
+        // Strip Angular decorators from class members (properties, methods, accessors)
+        for (const memberPath of path.get('body').get('body')) {
+          // Handle class properties (fields), methods and class accessor properties (getter/setter with accessor keyword)
+          if (
+            memberPath.isClassProperty() ||
+            memberPath.isClassMethod() ||
+            memberPath.isClassAccessorProperty()
+          ) {
+            stripAngularDecorators(memberPath, ANGULAR_MEMBER_DECORATORS);
+          }
+
+          // Handle constructor parameter decorators
+          if (
+            memberPath.isClassMethod() &&
+            (memberPath.node as t.ClassMethod).kind === 'constructor'
+          ) {
+            for (const paramPath of memberPath.get('params')) {
+              stripAngularDecorators(paramPath, ANGULAR_PARAM_DECORATORS);
             }
           }
         }
