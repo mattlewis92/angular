@@ -150,17 +150,30 @@ function addNgModuleExportSpreads(
   });
 
   // Modify the dependencies array based on its type
+  // Wrap in [...new Set([...])] to deduplicate at runtime
   const depsValue = depsProperty.value;
 
   if (t.isArrowFunctionExpression(depsValue) && t.isArrayExpression(depsValue.body)) {
     // dependencies: () => [Dep1, Dep2, ...]
-    // Add spreads to the array
+    // Add spreads and wrap in deduplication: () => [...new Set([Dep1, Dep2, ..., ...spreads])]
     const arrayExpr = depsValue.body as t.ArrayExpression;
     arrayExpr.elements.push(...spreadElements);
+
+    // Wrap in [...new Set([...])]
+    const deduplicatedArray = t.arrayExpression([
+      t.spreadElement(t.newExpression(t.identifier('Set'), [arrayExpr])),
+    ]);
+    depsValue.body = deduplicatedArray;
   } else if (t.isArrayExpression(depsValue)) {
     // dependencies: [Dep1, Dep2, ...]
-    // Add spreads to the array
+    // Add spreads and wrap in deduplication: [...new Set([Dep1, Dep2, ..., ...spreads])]
     depsValue.elements.push(...spreadElements);
+
+    // Wrap in [...new Set([...])]
+    const deduplicatedArray = t.arrayExpression([
+      t.spreadElement(t.newExpression(t.identifier('Set'), [depsValue])),
+    ]);
+    depsProperty.value = deduplicatedArray;
   }
   // Note: Other formats (like a function expression) are not modified
 
