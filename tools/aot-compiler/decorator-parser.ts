@@ -2083,17 +2083,16 @@ function extractHostBindingDecorators(classDecl: t.ClassDeclaration): {
 
       const bindingTarget = arg.value;
 
-      // Determine if this is a property or attribute binding
-      if (bindingTarget.startsWith('attr.')) {
-        // Attribute binding: @HostBinding('attr.role') -> [attr.role]="propName"
-        attributes[bindingTarget] = propName;
-      } else {
-        // Property binding: @HostBinding('class.active') -> properties['class.active'] = 'propName'
-        properties[bindingTarget] = propName;
-      }
+      // All @HostBinding decorators create dynamic property bindings
+      // even for 'attr.xxx' - they bind to the property value, not a static string
+      // @HostBinding('attr.role') -> [attr.role]="propName" -> reads ctx.propName
+      // @HostBinding('class.active') -> [class.active]="propName" -> reads ctx.propName
+      properties[bindingTarget] = propName;
     }
   }
 
+  // Note: 'attributes' is for static host attributes from the decorator's host object
+  // e.g., host: { 'role': 'button' } - these are literal values, not bindings
   return {properties, attributes};
 }
 
