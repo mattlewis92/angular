@@ -27,7 +27,7 @@ export async function compileHmrUpdateCode(
   className: string,
   options: CompileComponentOptions = {},
 ): Promise<HmrCompilationResult> {
-  const {readFile = defaultReadFile, babelPlugins = []} = options;
+  const {readFile = defaultReadFile, babelPlugins = [], compileStylesheet} = options;
 
   // 1. Parse the source file
   const {ast, sourceCode, absolutePath} = parseSource(fileContents, filePath);
@@ -48,6 +48,7 @@ export async function compileHmrUpdateCode(
     readFile,
     constantPool,
     true,
+    compileStylesheet,
   );
 
   // 4. Get class line number and named imports

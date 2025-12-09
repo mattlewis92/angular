@@ -48,6 +48,7 @@ export async function compileAngularDecorators(
     readFile = defaultReadFile,
     enableHmr = false,
     babelPlugins = [],
+    compileStylesheet,
   } = options;
 
   // 1. Parse the source file
@@ -75,7 +76,14 @@ export async function compileAngularDecorators(
       throw new Error(`${extracted.className}: Component must have a selector`);
     }
     compiledClasses.push(
-      await compileComponentClass(extracted, absolutePath, readFile, constantPool, enableHmr),
+      await compileComponentClass(
+        extracted,
+        absolutePath,
+        readFile,
+        constantPool,
+        enableHmr,
+        compileStylesheet,
+      ),
     );
   }
 

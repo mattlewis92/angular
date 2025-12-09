@@ -38,8 +38,17 @@ export async function compileComponentClass(
   readFile: (path: string) => Promise<string>,
   constantPool: ConstantPool,
   enableHmr: boolean,
+  compileStylesheet?: (
+    source: string,
+    filename: string,
+  ) => Promise<{code: string; deps?: Set<string>}>,
 ): Promise<CompiledClassData> {
-  const resources = await resolveTemplateAndStyles(extracted, absolutePath, readFile);
+  const resources = await resolveTemplateAndStyles(
+    extracted,
+    absolutePath,
+    readFile,
+    compileStylesheet,
+  );
   const {metadata, deferredImportNames, deferResolvedFilePaths} = await buildR3ComponentMetadata(
     extracted,
     resources,
@@ -141,6 +150,10 @@ export async function resolveTemplateAndStyles(
   metadata: ExtractedComponentMetadata,
   componentFilePath: string,
   readFile: (path: string) => Promise<string>,
+  compileStylesheet?: (
+    source: string,
+    filename: string,
+  ) => Promise<{code: string; deps?: Set<string>}>,
 ): Promise<ResolvedResources> {
   const componentDir = path.dirname(componentFilePath);
 
@@ -154,21 +167,50 @@ export async function resolveTemplateAndStyles(
     templateUrl = templatePath;
   }
 
-  if (!template) {
+  if (!template && template !== '') {
     throw new Error('Component must have either template or templateUrl');
   }
 
-  // Resolve styles
-  const styles = [...metadata.styles];
-  const styleUrls: string[] = [];
+  // Resolve and compile inline styles
+  const styles: string[] = [];
+  const styleDependencies: string[] = [];
 
+  for (const style of metadata.styles) {
+    if (compileStylesheet) {
+      const result = await compileStylesheet(style, componentFilePath);
+      styles.push(result.code);
+      if (result.deps) {
+        styleDependencies.push(...result.deps);
+      }
+    } else {
+      styles.push(style);
+    }
+  }
+
+  // Resolve and compile external styles
+  const styleUrls: string[] = [];
   for (const styleUrl of metadata.styleUrls) {
     const stylePath = path.resolve(componentDir, styleUrl);
-    styles.push(await readFile(stylePath));
+    const styleContent = await readFile(stylePath);
+    if (compileStylesheet) {
+      const result = await compileStylesheet(styleContent, stylePath);
+      styles.push(result.code);
+      if (result.deps) {
+        styleDependencies.push(...result.deps);
+      }
+    } else {
+      styles.push(styleContent);
+    }
     styleUrls.push(stylePath);
   }
 
-  return {template, templateUrl, styles, styleUrls};
+  return {
+    template,
+    templateUrl,
+    styles,
+    styleUrls,
+    styleDependencies: styleDependencies.length > 0 ? styleDependencies : undefined,
+  };
 }
 
 /**
@@ -184,6 +226,10 @@ export function collectDependencies(compiled: CompiledClassData): string[] {
   // Add external style URLs
   if (compiled.resources?.styleUrls) {
     dependencies.push(...compiled.resources.styleUrls);
+  }
+  // Add stylesheet compiler dependencies (e.g., @import paths from SCSS)
+  if (compiled.resources?.styleDependencies) {
+    dependencies.push(...compiled.resources.styleDependencies);
   }
   // Add defer block dependency files
   if (compiled.deferResolvedFilePaths) {

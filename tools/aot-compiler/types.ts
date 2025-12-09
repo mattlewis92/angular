@@ -159,6 +159,11 @@ export interface CompileComponentOptions {
   enableHmr?: boolean;
   /** Additional Babel plugins to run alongside the Angular transforms */
   babelPlugins?: PluginItem[];
+  /** Custom stylesheet compiler function for transforming styles (e.g., SCSS to CSS) */
+  compileStylesheet?: (
+    source: string,
+    filename: string,
+  ) => Promise<{code: string; deps?: Set<string>}>;
 }
 
 /**
@@ -444,6 +449,8 @@ export interface ResolvedResources {
   styles: string[];
   /** Resolved style file paths (absolute paths of external styles that were loaded) */
   styleUrls: string[];
+  /** Dependencies reported by the stylesheet compiler (e.g., @import paths in SCSS) */
+  styleDependencies?: string[];
 }
 
 /**
