@@ -60,6 +60,7 @@ export async function compileComponentClass(
     resources,
     deferResolvedFilePaths,
     constructorDeps: extracted.constructorDeps,
+    componentImports: extracted.imports,
   };
 }
 

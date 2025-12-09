@@ -13,7 +13,7 @@ import * as t from '@babel/types';
 
 import {BabelBackedTranslator} from './babel-translator';
 import {buildHmrMetadata, buildSetClassMetadataIIFE} from './hmr-utils';
-import {ClassTransformData, CompilationResult, CompiledClassData} from './types';
+import {ClassTransformData, CompilationResult, CompiledClassData, ImportMetadata} from './types';
 
 /**
  * Angular field/method decorators that should be removed during AOT compilation.
@@ -81,6 +81,90 @@ function stripAngularDecorators(nodePath: NodePath<t.Node>, decoratorNames: stri
       decoratorPath.remove();
     }
   }
+}
+
+/**
+ * Adds NgModule export spread expressions to the dependencies array in a component definition.
+ *
+ * For each direct import (not wrapped in forwardRef), adds:
+ *   ...(ImportName.ɵmod?.exports ?? [])
+ *
+ * This allows standalone components to inherit exports from imported NgModules.
+ *
+ * @param defExpr The component definition expression (ɵɵdefineComponent call)
+ * @param imports The component's imports metadata
+ * @returns The modified expression with spread elements added to dependencies
+ */
+function addNgModuleExportSpreads(
+  defExpr: t.Expression,
+  imports: ImportMetadata[] | undefined,
+): t.Expression {
+  // Only process if we have imports and they include non-forwardRef imports
+  if (!imports || imports.length === 0) {
+    return defExpr;
+  }
+
+  // Get direct imports (not wrapped in forwardRef)
+  const directImports = imports.filter((imp) => !imp.isForwardRef);
+  if (directImports.length === 0) {
+    return defExpr;
+  }
+
+  // The definition expression should be a call to ɵɵdefineComponent
+  if (!t.isCallExpression(defExpr)) {
+    return defExpr;
+  }
+
+  // First argument is the config object
+  const configArg = defExpr.arguments[0];
+  if (!t.isObjectExpression(configArg)) {
+    return defExpr;
+  }
+
+  // Find the dependencies property
+  const depsProperty = configArg.properties.find(
+    (prop): prop is t.ObjectProperty =>
+      t.isObjectProperty(prop) && t.isIdentifier(prop.key) && prop.key.name === 'dependencies',
+  );
+
+  if (!depsProperty) {
+    return defExpr;
+  }
+
+  // Build spread elements for each direct import: ...(ImportName.ɵmod?.exports ?? [])
+  const spreadElements = directImports.map((imp) => {
+    // Build: ImportName.ɵmod?.exports
+    // The ?. starts after .ɵmod, so: ImportName.ɵmod?.exports
+    const ɵmodAccess = t.memberExpression(t.identifier(imp.name), t.identifier('ɵmod'), false);
+    const optionalChain = t.optionalMemberExpression(
+      ɵmodAccess,
+      t.identifier('exports'),
+      false,
+      true,
+    );
+
+    // Build: ImportName.ɵmod?.exports ?? []
+    const nullishCoalesce = t.logicalExpression('??', optionalChain, t.arrayExpression([]));
+
+    return t.spreadElement(nullishCoalesce);
+  });
+
+  // Modify the dependencies array based on its type
+  const depsValue = depsProperty.value;
+
+  if (t.isArrowFunctionExpression(depsValue) && t.isArrayExpression(depsValue.body)) {
+    // dependencies: () => [Dep1, Dep2, ...]
+    // Add spreads to the array
+    const arrayExpr = depsValue.body as t.ArrayExpression;
+    arrayExpr.elements.push(...spreadElements);
+  } else if (t.isArrayExpression(depsValue)) {
+    // dependencies: [Dep1, Dep2, ...]
+    // Add spreads to the array
+    depsValue.elements.push(...spreadElements);
+  }
+  // Note: Other formats (like a function expression) are not modified
+
+  return defExpr;
 }
 
 /**
@@ -154,7 +238,12 @@ export function transformAndEmitWithBabel(
     const classLineNumber = classLineNumbers.get(className) ?? 1;
 
     // Translate the definition expression
-    const translatedDefExpr = translator.translateExpression(definitionExpr);
+    let translatedDefExpr = translator.translateExpression(definitionExpr);
+
+    // For components, add NgModule export spreads to the dependencies array
+    if (decoratorType === 'Component' && compiled.componentImports) {
+      translatedDefExpr = addNgModuleExportSpreads(translatedDefExpr, compiled.componentImports);
+    }
 
     // Generate debug info IIFE
     const debugInfo: R3ClassDebugInfo = {

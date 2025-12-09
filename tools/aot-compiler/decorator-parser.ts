@@ -707,7 +707,7 @@ function extractReferenceArray(
         const name = element.name;
         const modulePath = importMap.get(name);
         if (modulePath) {
-          result.push({name, modulePath});
+          result.push({name, modulePath, isForwardRef: false});
         }
         continue;
       }
@@ -719,7 +719,7 @@ function extractReferenceArray(
         const name = unwrapped.name;
         const modulePath = importMap.get(name);
         if (modulePath) {
-          result.push({name, modulePath});
+          result.push({name, modulePath, isForwardRef: true});
         }
       }
     }

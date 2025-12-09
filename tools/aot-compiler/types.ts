@@ -75,6 +75,8 @@ export interface CompiledClassData {
    * - undefined: not yet populated
    */
   constructorDeps?: ConstructorDependency[] | null;
+  /** Component imports metadata (for adding NgModule export spreads) */
+  componentImports?: ImportMetadata[];
 }
 
 /**
@@ -347,6 +349,8 @@ export interface ImportMetadata {
   name: string;
   /** The module path from the import statement (e.g., './child.component') */
   modulePath: string;
+  /** Whether the import was wrapped in forwardRef() */
+  isForwardRef?: boolean;
 }
 
 /**

@@ -1,4 +1,4 @@
-import {Component, ViewEncapsulation} from '@angular/core';
+import {Component, forwardRef, ViewEncapsulation} from '@angular/core';
 import {ShoutPipe} from './shout.pipe';
 import {HighlightDirective} from './highlight.directive';
 import {CardComponent} from './card.component';
@@ -30,7 +30,7 @@ import {DeclarationsOnlyModule} from './full-metadata.module';
   ],
   standalone: true,
   encapsulation: ViewEncapsulation.Emulated,
-  imports: [ShoutPipe, HighlightDirective, CardComponent, DeclarationsOnlyModule],
+  imports: [ShoutPipe, HighlightDirective, forwardRef(() => CardComponent), DeclarationsOnlyModule],
 })
 export class SampleComponent {
   name = 'World';
