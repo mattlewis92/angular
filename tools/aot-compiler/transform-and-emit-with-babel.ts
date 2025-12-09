@@ -86,10 +86,13 @@ function stripAngularDecorators(nodePath: NodePath<t.Node>, decoratorNames: stri
 /**
  * Adds NgModule export spread expressions to the dependencies array in a component definition.
  *
- * For each direct import (not wrapped in forwardRef), adds:
- *   ...(ImportName.ɵmod?.exports ?? [])
+ * For each direct import (not wrapped in forwardRef), adds a spread that recursively
+ * collects exports from nested NgModules (up to 3 levels deep):
+ *   ...ImportName.ɵmod?.exports?.flatMap(e => [e, ...(e.ɵmod?.exports ?? [])].flatMap(e2 => [e2, ...(e2.ɵmod?.exports ?? [])])) ?? []
  *
- * This allows standalone components to inherit exports from imported NgModules.
+ * This is necessary because NgModules can re-export other NgModules which contain
+ * the actual directives/pipes (e.g., FormsModule exports InternalFormsSharedModule
+ * which contains DefaultValueAccessor).
  *
  * @param defExpr The component definition expression (ɵɵdefineComponent call)
  * @param imports The component's imports metadata
@@ -131,20 +134,60 @@ function addNgModuleExportSpreads(
     return defExpr;
   }
 
-  // Build spread elements for each direct import: ...(ImportName.ɵmod?.exports ?? [])
+  // Build spread elements for each direct import that recursively collect exports.
+  // For each import, we generate:
+  //   ...ImportName.ɵmod?.exports?.flatMap(e => [e, ...(e.ɵmod?.exports ?? [])].flatMap(e2 => [e2, ...(e2.ɵmod?.exports ?? [])])) ?? []
+  //
+  // This handles up to 3 levels of nested NgModule exports which covers typical use cases.
   const spreadElements = directImports.map((imp) => {
+    // Build the innermost spread: ...(e2.ɵmod?.exports ?? [])
+    const e2ModExports = t.optionalMemberExpression(
+      t.memberExpression(t.identifier('e2'), t.identifier('ɵmod')),
+      t.identifier('exports'),
+      false,
+      true,
+    );
+    const e2Spread = t.spreadElement(
+      t.logicalExpression('??', e2ModExports, t.arrayExpression([])),
+    );
+
+    // Build: [e2, ...(e2.ɵmod?.exports ?? [])]
+    const e2Array = t.arrayExpression([t.identifier('e2'), e2Spread]);
+
+    // Build: ...(e.ɵmod?.exports ?? [])
+    const eModExports = t.optionalMemberExpression(
+      t.memberExpression(t.identifier('e'), t.identifier('ɵmod')),
+      t.identifier('exports'),
+      false,
+      true,
+    );
+    const eSpread = t.spreadElement(t.logicalExpression('??', eModExports, t.arrayExpression([])));
+
+    // Build: [e, ...(e.ɵmod?.exports ?? [])]
+    const eArray = t.arrayExpression([t.identifier('e'), eSpread]);
+
+    // Build: [e, ...(e.ɵmod?.exports ?? [])].flatMap(e2 => [e2, ...(e2.ɵmod?.exports ?? [])])
+    const innerFlatMap = t.callExpression(t.memberExpression(eArray, t.identifier('flatMap')), [
+      t.arrowFunctionExpression([t.identifier('e2')], e2Array),
+    ]);
+
     // Build: ImportName.ɵmod?.exports
-    // The ?. starts after .ɵmod, so: ImportName.ɵmod?.exports
-    const ɵmodAccess = t.memberExpression(t.identifier(imp.name), t.identifier('ɵmod'), false);
-    const optionalChain = t.optionalMemberExpression(
-      ɵmodAccess,
+    const importModExports = t.optionalMemberExpression(
+      t.memberExpression(t.identifier(imp.name), t.identifier('ɵmod')),
       t.identifier('exports'),
       false,
       true,
     );
 
-    // Build: ImportName.ɵmod?.exports ?? []
-    const nullishCoalesce = t.logicalExpression('??', optionalChain, t.arrayExpression([]));
+    // Build: ImportName.ɵmod?.exports?.flatMap(e => ...)
+    const outerFlatMap = t.optionalCallExpression(
+      t.optionalMemberExpression(importModExports, t.identifier('flatMap'), false, true),
+      [t.arrowFunctionExpression([t.identifier('e')], innerFlatMap)],
+      true,
+    );
+
+    // Build: ImportName.ɵmod?.exports?.flatMap(...) ?? []
+    const nullishCoalesce = t.logicalExpression('??', outerFlatMap, t.arrayExpression([]));
 
     return t.spreadElement(nullishCoalesce);
   });

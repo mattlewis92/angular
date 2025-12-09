@@ -1380,12 +1380,18 @@ function extractInputs(node: t.Node): Record<string, InputMetadata> {
  * - @Input() propName = value;
  * - @Input('alias') propName = value;
  * - @Input({alias: 'alias', required: true, transform: fn}) propName = value;
+ * - @Input() set propName(value) { ... }  (setter-based inputs)
  */
 function extractInputDecorators(classDecl: t.ClassDeclaration): Record<string, InputMetadata> {
   const result: Record<string, InputMetadata> = {};
 
   for (const member of classDecl.body.body) {
-    if (!t.isClassProperty(member)) continue;
+    // Handle both class properties and setters
+    // @Input() can be applied to:
+    //   - Class properties: @Input() propName = value;
+    //   - Setters: @Input() set propName(value) { ... }
+    const isSetter = t.isClassMethod(member) && member.kind === 'set';
+    if (!t.isClassProperty(member) && !isSetter) continue;
     if (!t.isIdentifier(member.key)) continue;
 
     const decorators = member.decorators;
