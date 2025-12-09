@@ -394,6 +394,10 @@ export interface ExtractedNgModuleMetadata {
    * - null: class extends another class without explicit constructor (use ɵɵgetInheritedFactory)
    */
   constructorDeps: ConstructorDependency[] | null;
+
+  // Raw AST array for injector metadata (preserves full expressions like RouterModule.forRoot([]))
+  /** Raw import expressions for injector - includes locally defined classes and call expressions */
+  rawImports: t.Expression[] | null;
 }
 
 /**

@@ -613,6 +613,7 @@ function extractNgModuleMetadata(
     id: null,
     containsForwardDecls: false,
     constructorDeps,
+    rawImports: null,
   };
 
   if (decorator.arguments.length === 0) return metadata;
@@ -642,6 +643,10 @@ function extractNgModuleMetadata(
           const result = extractReferenceArray(value, importMap);
           metadata.imports = result.imports;
           hasForwardRef = hasForwardRef || result.hasForwardRef;
+          // Store raw expressions for injector (preserves call expressions like RouterModule.forRoot([]))
+          if (t.isArrayExpression(value)) {
+            metadata.rawImports = value.elements.filter((el): el is t.Expression => el !== null);
+          }
           break;
         }
         case 'exports': {

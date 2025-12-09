@@ -1108,12 +1108,17 @@ export function buildR3NgModuleMetadata(
 export function buildR3InjectorMetadata(extracted: ExtractedNgModuleMetadata): R3InjectorMetadata {
   const type = createR3Reference(extracted.className);
 
-  // Imports for injector include both NgModule imports and exports
-  // Both can contribute to dependency injection
-  const injectorImports: o.Expression[] = [
-    ...extracted.imports.map((imp) => new ReadVarExpr(imp.name)),
-    ...extracted.exports.map((imp) => new ReadVarExpr(imp.name)),
-  ];
+  // Build injector imports from raw AST nodes
+  // This preserves full expressions like RouterModule.forRoot([]) and locally-defined classes
+  // Only imports contribute to the injector - exports are typically components/directives/pipes
+  // which don't have providers
+  const injectorImports: o.Expression[] = [];
+
+  if (extracted.rawImports) {
+    for (const node of extracted.rawImports) {
+      injectorImports.push(new o.WrappedNodeExpr(node));
+    }
+  }
 
   return {
     name: extracted.className,

@@ -8,6 +8,7 @@ import {
 import {CardComponent} from './card.component';
 import {HighlightDirective} from './highlight.directive';
 import {ShoutPipe} from './shout.pipe';
+import {RouterModule} from '@angular/router';
 
 const MY_TOKEN = new InjectionToken<string>('MY_TOKEN');
 
@@ -29,7 +30,7 @@ export class DeclarationsOnlyModule {}
  * Test 3: Module importing another module (composition)
  */
 @NgModule({
-  imports: [EmptyModule],
+  imports: [EmptyModule, RouterModule.forRoot([])],
   exports: [EmptyModule],
 })
 export class ComposedModule {}
