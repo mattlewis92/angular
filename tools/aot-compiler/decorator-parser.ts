@@ -821,6 +821,9 @@ function extractDirectiveMetadata(
   const signalQueries = extractSignalQueries(classDecl);
   const constructorDeps = extractConstructorDeps(classDecl);
 
+  // Extract @Input() decorators from class properties
+  const inputDecorators = extractInputDecorators(classDecl);
+
   // Extract host binding and listener decorators from class members
   const hostBindingDecorators = extractHostBindingDecorators(classDecl);
   const hostListenerDecorators = extractHostListenerDecorators(classDecl);
@@ -840,7 +843,7 @@ function extractDirectiveMetadata(
       specialAttributes: {},
     },
     host: {}, // Deprecated, kept for compatibility
-    inputs: {...signalInputs}, // Start with signal inputs, decorator inputs will be merged
+    inputs: {...inputDecorators, ...signalInputs}, // Merge @Input() decorators with signal inputs (signals take precedence)
     outputs: {},
     signalOutputs,
     models,
@@ -1004,6 +1007,9 @@ function extractComponentMetadata(
   const signalQueries = extractSignalQueries(classDecl);
   const constructorDeps = extractConstructorDeps(classDecl);
 
+  // Extract @Input() decorators from class properties
+  const inputDecorators = extractInputDecorators(classDecl);
+
   // Extract host binding and listener decorators from class members
   const hostBindingDecorators = extractHostBindingDecorators(classDecl);
   const hostListenerDecorators = extractHostListenerDecorators(classDecl);
@@ -1031,7 +1037,7 @@ function extractComponentMetadata(
       specialAttributes: {},
     },
     host: {}, // Deprecated, kept for compatibility
-    inputs: {...signalInputs}, // Start with signal inputs, decorator inputs will be merged
+    inputs: {...inputDecorators, ...signalInputs}, // Merge @Input() decorators with signal inputs (signals take precedence)
     outputs: {},
     signalOutputs,
     models,
@@ -1365,6 +1371,100 @@ function extractInputs(node: t.Node): Record<string, InputMetadata> {
       }
     }
   }
+  return result;
+}
+
+/**
+ * Extracts @Input() decorators from class properties.
+ * Handles:
+ * - @Input() propName = value;
+ * - @Input('alias') propName = value;
+ * - @Input({alias: 'alias', required: true, transform: fn}) propName = value;
+ */
+function extractInputDecorators(classDecl: t.ClassDeclaration): Record<string, InputMetadata> {
+  const result: Record<string, InputMetadata> = {};
+
+  for (const member of classDecl.body.body) {
+    if (!t.isClassProperty(member)) continue;
+    if (!t.isIdentifier(member.key)) continue;
+
+    const decorators = member.decorators;
+    if (!decorators) continue;
+
+    for (const decorator of decorators) {
+      const expr = decorator.expression;
+
+      // Check for @Input or @Input()
+      let isInputDecorator = false;
+      let decoratorArgs: t.Expression[] | null = null;
+
+      if (t.isIdentifier(expr) && expr.name === 'Input') {
+        isInputDecorator = true;
+        decoratorArgs = null;
+      } else if (t.isCallExpression(expr)) {
+        const callee = expr.callee;
+        if (t.isIdentifier(callee) && callee.name === 'Input') {
+          isInputDecorator = true;
+          decoratorArgs = expr.arguments as t.Expression[];
+        }
+        // Also handle namespaced: core.Input()
+        if (
+          t.isMemberExpression(callee) &&
+          t.isIdentifier(callee.property) &&
+          callee.property.name === 'Input'
+        ) {
+          isInputDecorator = true;
+          decoratorArgs = expr.arguments as t.Expression[];
+        }
+      }
+
+      if (!isInputDecorator) continue;
+
+      const propName = member.key.name;
+      let bindingPropertyName = propName;
+      let required = false;
+      let transform: t.Expression | null = null;
+
+      // Parse decorator argument: @Input('alias') or @Input({alias, required, transform})
+      if (decoratorArgs && decoratorArgs.length > 0) {
+        const arg = decoratorArgs[0];
+
+        if (t.isStringLiteral(arg)) {
+          // @Input('alias')
+          bindingPropertyName = arg.value;
+        } else if (t.isObjectExpression(arg)) {
+          // @Input({alias, required, transform})
+          for (const prop of arg.properties) {
+            if (t.isObjectProperty(prop) && t.isIdentifier(prop.key)) {
+              switch (prop.key.name) {
+                case 'alias':
+                  const aliasVal = extractStringValue(prop.value);
+                  if (aliasVal) bindingPropertyName = aliasVal;
+                  break;
+                case 'required':
+                  required = extractBooleanValue(prop.value) ?? false;
+                  break;
+                case 'transform':
+                  if (t.isExpression(prop.value)) {
+                    transform = prop.value;
+                  }
+                  break;
+              }
+            }
+          }
+        }
+      }
+
+      result[propName] = {
+        bindingPropertyName,
+        required,
+        isSignal: false,
+        transform,
+      };
+      break; // Only process first @Input decorator per property
+    }
+  }
+
   return result;
 }
 
