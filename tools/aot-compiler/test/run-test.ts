@@ -277,6 +277,15 @@ async function main(): Promise<void> {
   );
   allPassed = allPassed && inheritanceResult;
 
+  // Test nested structural directives with template context variables
+  // This verifies that template functions are emitted in correct order (deepest first)
+  // and that nextContext() calls correctly access parent template variables
+  const nestedContextResult = await testComponent(
+    path.join(testDir, 'nested-template-context.component.ts'),
+    'Nested Template Context',
+  );
+  allPassed = allPassed && nestedContextResult;
+
   if (!allPassed) {
     process.exit(1);
   }

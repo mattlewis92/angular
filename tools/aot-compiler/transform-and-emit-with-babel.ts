@@ -589,16 +589,24 @@ export function transformAndEmitWithBabel(
           }
 
           // Add new import declarations after existing imports
+          // Note: We must track the insertion point properly because Babel's NodePath tracks the
+          // actual node, not the index. Using insertAfter on the same path repeatedly would insert
+          // all declarations after the same original node, resulting in reversed order.
           if (newImportDeclarations.length > 0) {
             if (lastImportIndex === -1) {
-              // No existing imports - add at the beginning
+              // No existing imports - add at the beginning in reverse order
               for (let i = newImportDeclarations.length - 1; i >= 0; i--) {
                 body[0].insertBefore(newImportDeclarations[i]);
               }
             } else {
-              // Insert after the last existing import
+              // Insert after the last existing import, tracking the insertion point
+              let importInsertionPoint = body[lastImportIndex];
               for (const decl of newImportDeclarations) {
-                body[lastImportIndex].insertAfter(decl);
+                importInsertionPoint.insertAfter(decl);
+                // Move insertion point to the newly inserted import
+                const freshBody = path.get('body');
+                const currentIdx = freshBody.findIndex((p) => p.node === importInsertionPoint.node);
+                importInsertionPoint = freshBody[currentIdx + 1];
               }
             }
           }
@@ -613,10 +621,27 @@ export function transformAndEmitWithBabel(
           }
 
           // Insert additional statements after the last import (or at the beginning if no imports)
+          // Note: We must track the insertion point properly because Babel's NodePath tracks the
+          // actual node, not the index. Using insertBefore in a backward loop would insert all
+          // statements before the same node (which shifts position), resulting in reversed order.
           if (additionalStatements.length > 0) {
-            const insertIndex = newLastImportIndex + 1;
-            for (let i = additionalStatements.length - 1; i >= 0; i--) {
-              updatedBody[insertIndex].insertBefore(additionalStatements[i]);
+            if (newLastImportIndex >= 0) {
+              // Insert after the last import, tracking the insertion point
+              let insertionPoint = updatedBody[newLastImportIndex];
+              for (const stmt of additionalStatements) {
+                insertionPoint.insertAfter(stmt);
+                // Move insertion point to the newly inserted statement
+                // by getting fresh body paths after each insertion
+                const freshBody = path.get('body');
+                const currentIdx = freshBody.findIndex((p) => p.node === insertionPoint.node);
+                insertionPoint = freshBody[currentIdx + 1];
+              }
+            } else {
+              // No imports - insert at beginning in reverse order
+              // (insertBefore on index 0 repeatedly in reverse gives correct order)
+              for (let i = additionalStatements.length - 1; i >= 0; i--) {
+                path.get('body')[0].insertBefore(additionalStatements[i]);
+              }
             }
           }
 
