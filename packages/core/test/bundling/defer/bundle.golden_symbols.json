@@ -659,6 +659,7 @@
       "registerPreOrderHooks",
       "rememberChangeHistoryAndInvokeOnChangesHook",
       "remove",
+      "removeAnimationsFromQueue",
       "removeFromArray",
       "removeLViewFromLContainer",
       "removeLViewOnDestroy",
